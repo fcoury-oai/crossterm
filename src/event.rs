@@ -142,9 +142,9 @@ use std::time::Duration;
 use bitflags::bitflags;
 use std::hash::{Hash, Hasher};
 
-/// Checks if there is an [`Event`](enum.Event.html) available.
+/// Checks if there is an [`Event`] available.
 ///
-/// Returns `Ok(true)` if an [`Event`](enum.Event.html) is available otherwise it returns `Ok(false)`.
+/// Returns `Ok(true)` if an [`Event`] is available otherwise it returns `Ok(false)`.
 ///
 /// `Ok(true)` guarantees that subsequent call to the [`read`](fn.read.html) function
 /// won't block.
@@ -185,10 +185,10 @@ pub fn poll(timeout: Duration) -> std::io::Result<bool> {
     internal::poll(Some(timeout), &EventFilter)
 }
 
-/// Reads a single [`Event`](enum.Event.html).
+/// Reads a single [`Event`].
 ///
-/// This function blocks until an [`Event`](enum.Event.html) is available. Combine it with the
-/// [`poll`](fn.poll.html) function to get non-blocking reads.
+/// This function blocks until an [`Event`] is available. Combine it with the
+/// [`poll`] function to get non-blocking reads.
 ///
 /// # Examples
 ///
@@ -279,7 +279,7 @@ pub fn discard_buffered_input() -> std::io::Result<InputDiscardStatus> {
     internal::lock_event_reader().discard_buffered_input()
 }
 
-/// Attempts to read a single [`Event`](enum.Event.html) without blocking the thread.
+/// Attempts to read a single [`Event`] without blocking the thread.
 ///
 /// If no event is found, `None` is returned.
 ///

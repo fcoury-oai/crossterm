@@ -158,10 +158,8 @@ impl EventSource for UnixInternalEventSource {
                 loop {
                     let read_count = read_complete(&self.tty, &mut self.tty_buffer)?;
                     if read_count > 0 {
-                        self.parser.advance(
-                            &self.tty_buffer[..read_count],
-                            read_count == TTY_BUFFER_SIZE,
-                        );
+                        self.parser
+                            .buffer_external_input(&self.tty_buffer[..read_count]);
                     }
 
                     if let Some(event) = self.parser.next() {
@@ -437,6 +435,15 @@ impl Parser {
             }
             let more = idx + 1 < buffer.len() || more;
 
+            // A second Escape starts another input sequence. Emit the first one
+            // without consuming the prefix of the next report.
+            if self.buffer.as_slice() == b"\x1b" && *byte == b'\x1b' {
+                self.internal_events
+                    .push_back(InternalEvent::Event(Event::Key(
+                        crate::event::KeyCode::Esc.into(),
+                    )));
+                self.buffer.clear();
+            }
             self.buffer.push(*byte);
 
             match parse_event(&self.buffer, more) {
