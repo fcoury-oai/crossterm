@@ -94,6 +94,8 @@ impl InternalEventReader {
                     }
                 }
                 Err(e) => {
+                    // Cancellation can hand the queue directly to a different filter.
+                    self.events.extend(self.skipped_events.drain(..));
                     if e.kind() == io::ErrorKind::Interrupted {
                         return Ok(false);
                     }
@@ -106,7 +108,7 @@ impl InternalEventReader {
                 self.events.extend(self.skipped_events.drain(..));
 
                 if let Some(event) = maybe_event {
-                    self.events.push_front(event);
+                    self.events.push_back(event);
                     return Ok(true);
                 }
 
@@ -157,8 +159,10 @@ impl InternalEventReader {
             skipped_events.push(event);
         }
 
-        // push all skipped events back to the event queue
-        self.events.extend(skipped_events);
+        // Skipped events preceded the unread tail; keep them in that order.
+        for event in skipped_events.into_iter().rev() {
+            self.events.push_front(event);
+        }
 
         result
     }
@@ -280,7 +284,12 @@ mod tests {
         const CURSOR_EVENT: InternalEvent = InternalEvent::CursorPosition(10, 20);
 
         let mut reader = InternalEventReader {
-            events: vec![SKIPPED_EVENT, CURSOR_EVENT].into(),
+            events: vec![
+                SKIPPED_EVENT,
+                CURSOR_EVENT,
+                InternalEvent::Event(Event::Resize(30, 40)),
+            ]
+            .into(),
             source: None,
             skipped_events: Vec::with_capacity(32),
         };

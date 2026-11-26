@@ -46,11 +46,12 @@ impl Default for EventStream {
         thread::spawn(move || {
             while let Ok(task) = receiver.recv() {
                 loop {
-                    if let Ok(true) = internal::poll(None, &EventFilter) {
-                        break;
-                    }
-
-                    if task.stream_wake_task_should_shutdown.load(Ordering::SeqCst) {
+                    // A handoff may have consumed the cancellation wake while this
+                    // worker waited for the reader lock.
+                    let mut reader = internal::lock_event_reader();
+                    if task.stream_wake_task_should_shutdown.load(Ordering::SeqCst)
+                        || matches!(reader.poll(None, &EventFilter), Ok(true))
+                    {
                         break;
                     }
                 }
@@ -142,6 +143,8 @@ impl Drop for EventStream {
     fn drop(&mut self) {
         self.stream_wake_task_should_shutdown
             .store(true, Ordering::SeqCst);
-        let _ = self.poll_internal_waker.wake();
+        if self.stream_wake_task_executed.load(Ordering::SeqCst) {
+            let _ = self.poll_internal_waker.wake();
+        }
     }
 }
