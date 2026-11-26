@@ -82,3 +82,9 @@ fn matches_sgr_parameters(params: &[u8], complete: bool) -> bool {
     // The mouse parser also accepts a trailing separator before M/m.
     fields.next().is_none_or(<[u8]>::is_empty) && fields.next().is_none()
 }
+
+fn unread_bytes(tty: &crate::terminal::sys::file_descriptor::FileDesc<'_>) -> std::io::Result<u64> {
+    // SAFETY: the source owns this descriptor for the lifetime of the borrow.
+    let fd = unsafe { rustix::fd::BorrowedFd::borrow_raw(tty.raw_fd()) };
+    Ok(rustix::io::ioctl_fionread(fd)?)
+}
