@@ -14,29 +14,18 @@ const OSC_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Parser {
     pub(super) fn buffer_external_input(&mut self, buffer: &[u8]) {
-        if self.pending_escape_expired() && self.has_osc_selector() {
-            // The terminal's reply budget elapsed. Start fresh with these bytes.
-            self.resolve_pending_escape();
+        if buffer.is_empty() {
+            return;
         }
-        // As for a lone Escape, give a queued continuation of ESC ] a chance to
-        // complete the sequence even if the reader was descheduled.
+        // Process queued continuations before checking for an idle timeout.
+        // A fragmented reply can keep making progress across many reads.
         self.advance(buffer, true);
-        if self.pending_escape_expired() {
-            self.resolve_pending_escape();
-        }
-    }
-
-    pub(super) fn track_pending_escape(&mut self) {
-        self.pending_escape_deadline = match self.buffer.as_slice() {
-            b"\x1b" | b"\x1b]" => Some(Instant::now() + ESCAPE_TIMEOUT),
-            [0x1b, b']', selector @ .., b';']
-                if !selector.is_empty() && selector.iter().all(u8::is_ascii_digit) =>
-            {
-                Some(Instant::now() + OSC_REPLY_TIMEOUT)
-            }
-            [0x1b, b']', ..] => self.pending_escape_deadline,
-            _ => None,
+        let delay = match self.buffer.as_slice() {
+            [0x1b, b']', ..] if self.has_osc_selector() => OSC_REPLY_TIMEOUT,
+            [0x1b] | [0x1b, b']', ..] => ESCAPE_TIMEOUT,
+            _ => return,
         };
+        self.pending_escape_deadline = Some(Instant::now() + delay);
     }
 
     pub(super) fn interrupt_pending_osc(&mut self, byte: u8) {
@@ -184,13 +173,42 @@ mod tests {
     }
 
     #[test]
+    fn split_enhanced_interrupt_gets_its_own_escape_window() {
+        let mut parser = Parser::default();
+        parser.buffer_external_input(b"\x1b]");
+        parser.pending_escape_deadline = Some(Instant::now());
+        parser.buffer_external_input(b"\x1b");
+        parser.buffer_external_input(b"[99;5u");
+        assert_eq!(
+            parser.collect::<Vec<_>>(),
+            [alt_bracket(), key('c', KeyModifiers::CONTROL)]
+        );
+    }
+
+    #[test]
+    fn queued_color_reply_keeps_progress_across_expired_deadlines() {
+        let mut parser = Parser::default();
+        parser.buffer_external_input(b"\x1b]");
+        for fragment in [b"1".as_slice(), b"1;rgb:", b"ff/00/00", b"\x07"] {
+            // Model a descheduled reader resuming with bytes already queued.
+            parser.pending_escape_deadline = Some(Instant::now());
+            parser.buffer_external_input(fragment);
+        }
+        assert!(matches!(
+            parser.next(),
+            Some(InternalEvent::OscColor { slot: 11, .. })
+        ));
+        assert_eq!(parser.next(), None);
+    }
+
+    #[test]
     fn truncated_osc_drops_reply_bytes_and_preserves_fresh_input() {
         let mut parser = Parser::default();
         parser.buffer_external_input(b"\x1b]10;");
-        let deadline = parser.pending_escape_deadline.unwrap();
         parser.buffer_external_input(b"rgb:ff/");
-        assert_eq!(parser.pending_escape_deadline, Some(deadline));
+        assert!(parser.pending_escape_deadline.is_some());
         parser.pending_escape_deadline = Some(Instant::now());
+        assert_eq!(parser.finish_pending_escape(), None);
         parser.buffer_external_input(b"x");
         assert_eq!(parser.collect::<Vec<_>>(), [key('x', KeyModifiers::NONE)]);
         check_every_split(

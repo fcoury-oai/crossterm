@@ -292,6 +292,7 @@ impl Parser {
     }
 
     fn advance(&mut self, buffer: &[u8], more: bool) {
+        self.pending_escape_deadline = None;
         for (idx, byte) in buffer.iter().enumerate() {
             if let Some(discarded_sequence) = self.discarded_sequence {
                 self.discarded_sequence = match discarded_sequence {
@@ -411,7 +412,6 @@ impl Parser {
                     self.buffer.clear();
                 }
             }
-            self.track_pending_escape();
         }
     }
 }
