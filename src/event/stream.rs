@@ -216,8 +216,26 @@ impl TerminalEventStream {
     /// arrive after this check. After returning false, the next stream poll can wake the
     /// caller to retry even if the completed frame was silently discarded.
     pub fn can_query(&self) -> bool {
+        self.check_query(|reader| reader.can_query())
+    }
+
+    /// Prepare to write OSC 10/11 queries followed by a mode 2031 status request.
+    ///
+    /// On success, send that batch immediately. While its status reply is pending,
+    /// a fragmented OSC selector gets the color reply timeout (up to two seconds
+    /// from the latest query). An ambiguous legacy Escape or Alt+] in that interval
+    /// may wait for more bytes. The status reply restores the usual key deadline.
+    /// On failure, retry before the next stream poll as with [`Self::can_query`].
+    pub fn prepare_color_query(&self) -> bool {
+        self.check_query(|reader| reader.prepare_color_query())
+    }
+
+    fn check_query(
+        &self,
+        check: impl FnOnce(&mut super::read::InternalEventReader) -> bool,
+    ) -> bool {
         let ready = internal::try_lock_event_reader_for(Duration::ZERO)
-            .is_some_and(|reader| reader.can_query());
+            .is_some_and(|mut reader| check(&mut reader));
         let worker = &self.stream.worker;
         let was_waiting = worker.waiting_for_query.swap(!ready, Ordering::SeqCst);
         // An active worker may already be waiting for an event. Interrupt it once

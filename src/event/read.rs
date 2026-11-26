@@ -80,6 +80,18 @@ impl InternalEventReader {
                 .is_some_and(|source| source.can_query())
     }
 
+    #[cfg(all(feature = "event-stream", unix))]
+    pub(crate) fn prepare_color_query(&mut self) -> bool {
+        if !self.can_query() {
+            return false;
+        }
+        self.source
+            .as_mut()
+            .expect("ready reader")
+            .expect_color_replies();
+        true
+    }
+
     // Consume input that predates the handoff marker through the same parser.
     // In particular, never write a reply into a partially received paste.
     #[cfg(all(feature = "event-stream", unix))]
@@ -699,6 +711,9 @@ mod tests {
             self.events.clear();
             super::InputDiscardStatus::Complete
         }
+
+        #[cfg(all(feature = "event-stream", unix))]
+        fn expect_color_replies(&mut self) {}
 
         #[cfg(all(feature = "event-stream", unix))]
         fn can_query(&self) -> bool {
