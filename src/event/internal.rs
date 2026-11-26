@@ -16,7 +16,7 @@ pub(crate) fn lock_event_reader() -> MappedMutexGuard<'static, InternalEventRead
     })
 }
 
-fn try_lock_event_reader_for(
+pub(crate) fn try_lock_event_reader_for(
     duration: Duration,
 ) -> Option<MappedMutexGuard<'static, InternalEventReader>> {
     Some(MutexGuard::map(
@@ -81,6 +81,24 @@ pub(crate) enum InternalEvent {
     /// OSC color response (`slot`, `payload`).
     #[cfg(unix)]
     OscColor { slot: u8, payload: OscColorPayload },
+    /// A DEC mode 2031 palette-change notification.
+    #[cfg(unix)]
+    ColorSchemeChanged,
+    /// DECRPM for mode 2031. Only modes 1 (set) and 2 (reset) are mutable.
+    #[cfg(unix)]
+    ColorSchemeReporting(u8),
+}
+
+#[cfg(all(unix, feature = "event-stream"))]
+impl InternalEvent {
+    pub(crate) fn is_palette_report(&self) -> bool {
+        matches!(
+            self,
+            Self::OscColor { slot: 10 | 11, .. }
+                | Self::ColorSchemeChanged
+                | Self::ColorSchemeReporting(_)
+        )
+    }
 }
 
 /// Parsed payload of an OSC color response.

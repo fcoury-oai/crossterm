@@ -231,6 +231,23 @@ impl EventSource for UnixInternalEventSource {
     }
 
     #[cfg(feature = "event-stream")]
+    fn can_query(&self) -> bool {
+        self.parser.buffer.is_empty()
+            && self.parser.discarded_sequence.is_none()
+            && !self
+                .parser
+                .internal_events
+                .iter()
+                .any(InternalEvent::is_palette_report)
+            && matches!(super::unread_bytes(&self.tty), Ok(0))
+    }
+
+    #[cfg(feature = "event-stream")]
+    fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool) {
+        self.parser.internal_events.retain(|event| !matches(event));
+    }
+
+    #[cfg(feature = "event-stream")]
     fn waker(&self) -> Waker {
         self.wake_pipe.waker.clone()
     }

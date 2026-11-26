@@ -191,6 +191,23 @@ impl EventSource for UnixInternalEventSource {
     }
 
     #[cfg(feature = "event-stream")]
+    fn can_query(&self) -> bool {
+        self.parser.buffer.is_empty()
+            && self.parser.discarded_sequence.is_none()
+            && !self
+                .parser
+                .internal_events
+                .iter()
+                .any(InternalEvent::is_palette_report)
+            && matches!(super::unread_bytes(&self.tty_fd), Ok(0))
+    }
+
+    #[cfg(feature = "event-stream")]
+    fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool) {
+        self.parser.internal_events.retain(|event| !matches(event));
+    }
+
+    #[cfg(feature = "event-stream")]
     fn waker(&self) -> Waker {
         self.waker.clone()
     }
@@ -476,6 +493,7 @@ mod tests {
             let (mut source, mut writer) = source_with_input();
             source.buffer_input(b"\x1b[?", &mut Default::default());
             source.discard_buffered_input();
+            assert!(!source.can_query());
             writer.write_all(b"7u\x1b[3;4R").unwrap();
             // kqueue can deliver either order in a single edge-triggered batch.
             source
@@ -491,7 +509,40 @@ mod tests {
                     assert_eq!(result.unwrap(), Some(InternalEvent::CursorPosition(3, 2)));
                 }
             }
+            assert!(source.can_query());
         }
+    }
+
+    #[cfg(all(feature = "event-stream", feature = "bracketed-paste"))]
+    #[test]
+    fn query_waits_for_paste_and_escape_boundaries() {
+        let (mut source, mut writer) = source_with_input();
+        assert!(source.can_query());
+        writer.write_all(b"\x1b[?997;2n\x1b[200~draft").unwrap();
+        assert!(!source.can_query());
+        assert_eq!(
+            source.try_read(Some(Duration::ZERO)).unwrap(),
+            Some(InternalEvent::ColorSchemeChanged)
+        );
+        assert!(!source.can_query());
+        writer.write_all(b"\x1b[201~\x1b").unwrap();
+        assert_eq!(
+            source.try_read(Some(Duration::ZERO)).unwrap(),
+            Some(InternalEvent::Event(Event::Paste("draft".into())))
+        );
+        assert!(!source.can_query());
+        writer.write_all(b"\x1b[?2031;2$y").unwrap();
+        assert_eq!(
+            source.try_read(Some(Duration::ZERO)).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyCode::Esc.into())))
+        );
+        // A reply queued behind the key belongs to an earlier query.
+        assert!(!source.can_query());
+        assert_eq!(
+            source.try_read(Some(Duration::ZERO)).unwrap(),
+            Some(InternalEvent::ColorSchemeReporting(2))
+        );
+        assert!(source.can_query());
     }
 
     #[test]
