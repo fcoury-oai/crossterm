@@ -62,6 +62,18 @@ impl InternalEventReader {
         Ok(status)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn discard_buffered_input_after_poll(&mut self) -> io::Result<InputDiscardStatus> {
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.has_pending_escape())
+        {
+            return Ok(InputDiscardStatus::ControlSequenceInProgress);
+        }
+        self.discard_buffered_input()
+    }
+
     #[cfg(all(feature = "event-stream", unix))]
     pub(crate) fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool) {
         self.events.retain(|event| !matches(event));
@@ -258,6 +270,17 @@ mod tests {
     #[cfg(unix)]
     use super::super::filter::CursorPositionFilter;
     use super::{super::Event, EventSource, Filter, InternalEvent, InternalEventReader};
+
+    #[cfg(all(unix, feature = "event-stream"))]
+    impl InternalEventReader {
+        pub(crate) fn with_test_source(source: impl EventSource + 'static) -> Self {
+            Self {
+                events: VecDeque::new(),
+                source: Some(Box::new(source)),
+                skipped_events: Vec::new(),
+            }
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub(crate) struct InternalEventFilter;

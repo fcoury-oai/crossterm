@@ -281,6 +281,18 @@ pub fn discard_buffered_input() -> std::io::Result<InputDiscardStatus> {
     internal::lock_event_reader().discard_buffered_input()
 }
 
+/// Discard input after polling and draining decoded events at a screen transition.
+///
+/// While an ambiguous Escape can still resolve as a key, return
+/// [`InputDiscardStatus::ControlSequenceInProgress`] without discarding input.
+/// Continue draining events with [`poll`] and [`read`] before retrying. Otherwise
+/// this has the same semantics as [`discard_buffered_input`]. Use that function
+/// directly when incomplete input must be quarantined immediately.
+#[cfg(unix)]
+pub fn discard_buffered_input_after_poll() -> std::io::Result<InputDiscardStatus> {
+    internal::lock_event_reader().discard_buffered_input_after_poll()
+}
+
 /// Attempts to read a single [`Event`] without blocking the thread.
 ///
 /// If no event is found, `None` is returned.
