@@ -2,6 +2,9 @@
 //! ambiguity window until a numeric selector and semicolon identify a reply.
 //! For an outstanding color query, a partial OSC 10/11 selector can take
 //! the remaining reply budget until the mode status marker arrives.
+//! A partial selector replayed by another consumer also gets the reply
+//! timeout, even before the event stream starts. A bare Escape keeps its
+//! ordinary keyboard deadline.
 //! Completed replies (including unsupported ones) still take the normal path.
 
 use std::time::{Duration, Instant};
@@ -13,6 +16,10 @@ use super::Parser;
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(20);
 // Match the foreground/background color query budget after the OSC header.
 const OSC_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn is_color_prefix(input: &[u8]) -> bool {
+    !input.is_empty() && (b"\x1b]10;".starts_with(input) || b"\x1b]11;".starts_with(input))
+}
 
 #[cfg(feature = "event-stream")]
 #[derive(Debug, Default)]
@@ -40,12 +47,17 @@ impl ColorQueries {
     }
 
     fn prefix_deadline(&self, input: &[u8]) -> Option<Instant> {
-        self.deadline
-            .filter(|_| b"\x1b]10;".starts_with(input) || b"\x1b]11;".starts_with(input))
+        self.deadline.filter(|_| is_color_prefix(input))
     }
 }
 
 impl Parser {
+    pub(super) fn buffer_replayed_input(&mut self, buffer: &[u8]) {
+        self.advance(buffer, true);
+        self.replayed_color_prefix = is_color_prefix(&self.buffer);
+        self.arm_escape_timeout();
+    }
+
     pub(super) fn buffer_external_input(&mut self, buffer: &[u8]) {
         if buffer.is_empty() {
             return;
@@ -53,8 +65,18 @@ impl Parser {
         // Process queued continuations before checking for an idle timeout.
         // A fragmented reply can keep making progress across many reads.
         self.advance(buffer, true);
+        // A longer tail still contains bytes from the replayed frame. A new
+        // Alt+] in this read must get its own, ordinary keyboard deadline.
+        self.replayed_color_prefix &=
+            self.buffer.len() > buffer.len() && is_color_prefix(&self.buffer);
+        self.arm_escape_timeout();
+    }
+
+    fn arm_escape_timeout(&mut self) {
         let delay = match self.buffer.as_slice() {
-            [0x1b, b']', ..] if self.has_osc_selector() => OSC_REPLY_TIMEOUT,
+            [0x1b, b']', ..] if self.replayed_color_prefix || self.has_osc_selector() => {
+                OSC_REPLY_TIMEOUT
+            }
             [0x1b] | [0x1b, b']', ..] => ESCAPE_TIMEOUT,
             _ => return,
         };
@@ -194,6 +216,46 @@ mod tests {
         assert_eq!(parser.finish_pending_escape(), Some(alt_bracket()));
         parser.buffer_external_input(b"\xa9");
         assert_eq!(parser.collect::<Vec<_>>(), [key('é', KeyModifiers::NONE)]);
+    }
+
+    #[test]
+    fn replayed_bare_escape_keeps_its_keyboard_deadline() {
+        let (mut reader, _writer) = super::super::tests::source_with_input();
+        reader.buffer_input(b"\x1b", &mut Default::default());
+        assert_eq!(
+            reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyCode::Esc.into())))
+        );
+    }
+
+    #[test]
+    fn replayed_color_selector_survives_delayed_fragments() {
+        for (slot, replayed, queued) in [
+            (10, b"\x1b]".as_slice(), b"".as_slice()),
+            (11, b"\x1b", b"]"),
+        ] {
+            let (mut reader, mut writer) = super::super::tests::source_with_input();
+            // Queue the continuation before starting the bare Escape deadline.
+            writer.write_all(queued).unwrap();
+            reader.buffer_input(replayed, &mut Default::default());
+            for digit in slot.to_string().bytes() {
+                assert_eq!(reader.try_read(Some(ESCAPE_TIMEOUT * 3)).unwrap(), None);
+                writer.write_all(&[digit]).unwrap();
+            }
+            assert_eq!(reader.try_read(Some(ESCAPE_TIMEOUT * 3)).unwrap(), None);
+            writer.write_all(b";rgb:ff/00/00\x07m\x1b]").unwrap();
+            let reply = format!("\x1b]{slot};rgb:ff/00/00\x07");
+            for expected in [
+                parse_event(reply.as_bytes(), false).unwrap().unwrap(),
+                key('m', KeyModifiers::NONE),
+                alt_bracket(),
+            ] {
+                assert_eq!(
+                    reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+                    Some(expected)
+                );
+            }
+        }
     }
 
     #[test]
