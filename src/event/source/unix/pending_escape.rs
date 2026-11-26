@@ -1,5 +1,7 @@
 //! A legacy Alt+] key and an OSC reply both begin with ESC ]. Use the Escape
 //! ambiguity window until a numeric selector and semicolon identify a reply.
+//! For an outstanding color query, a partial OSC 10/11 selector can take
+//! the remaining reply budget until the mode status marker arrives.
 //! Completed replies (including unsupported ones) still take the normal path.
 
 use std::time::{Duration, Instant};
@@ -11,6 +13,37 @@ use super::Parser;
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(20);
 // Match the foreground/background color query budget after the OSC header.
 const OSC_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(feature = "event-stream")]
+#[derive(Debug, Default)]
+pub(super) struct ColorQueries {
+    pending: usize,
+    deadline: Option<Instant>,
+}
+
+#[cfg(feature = "event-stream")]
+impl ColorQueries {
+    pub(super) fn begin(&mut self) {
+        let now = Instant::now();
+        if self.deadline.is_none_or(|deadline| deadline <= now) {
+            self.pending = 0;
+        }
+        self.pending = self.pending.saturating_add(1);
+        self.deadline = Some(now + OSC_REPLY_TIMEOUT);
+    }
+
+    pub(super) fn finish(&mut self) {
+        self.pending = self.pending.saturating_sub(1);
+        if self.pending == 0 {
+            self.deadline = None;
+        }
+    }
+
+    fn prefix_deadline(&self, input: &[u8]) -> Option<Instant> {
+        self.deadline
+            .filter(|_| b"\x1b]10;".starts_with(input) || b"\x1b]11;".starts_with(input))
+    }
+}
 
 impl Parser {
     pub(super) fn buffer_external_input(&mut self, buffer: &[u8]) {
@@ -25,7 +58,10 @@ impl Parser {
             [0x1b] | [0x1b, b']', ..] => ESCAPE_TIMEOUT,
             _ => return,
         };
-        self.pending_escape_deadline = Some(Instant::now() + delay);
+        let deadline = Some(Instant::now() + delay);
+        #[cfg(feature = "event-stream")]
+        let deadline = deadline.max(self.color_queries.prefix_deadline(&self.buffer));
+        self.pending_escape_deadline = deadline;
     }
 
     pub(super) fn interrupt_pending_osc(&mut self, byte: u8) {
@@ -170,6 +206,35 @@ mod tests {
             assert!(matches!(event, InternalEvent::OscColor { .. }));
             check_every_split(reply, &[event]);
         }
+    }
+
+    #[cfg(feature = "event-stream")]
+    #[test]
+    fn outstanding_color_query_protects_the_selector_until_its_status_reply() {
+        let (mut reader, mut writer) = super::super::tests::source_with_input();
+        reader.expect_color_replies();
+        reader.expect_color_replies();
+        writer.write_all(b"\x1b[?2031;1$y\x1b]").unwrap();
+        assert_eq!(
+            reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+            Some(InternalEvent::ColorSchemeReporting(1))
+        );
+        assert_eq!(reader.try_read(Some(ESCAPE_TIMEOUT * 3)).unwrap(), None);
+        writer
+            .write_all(b"11;rgb:ff/ff/ff\x07\x1b[?2031;1$y\x1b]")
+            .unwrap();
+        let reply = parse_event(b"\x1b]11;rgb:ff/ff/ff\x07", false).unwrap();
+        for event in [
+            reply,
+            Some(InternalEvent::ColorSchemeReporting(1)),
+            Some(alt_bracket()),
+        ] {
+            assert_eq!(
+                reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+                event
+            );
+        }
+        assert_eq!(reader.try_read(Some(Duration::ZERO)).unwrap(), None);
     }
 
     #[test]

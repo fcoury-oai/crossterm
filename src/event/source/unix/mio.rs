@@ -206,6 +206,11 @@ impl EventSource for UnixInternalEventSource {
     }
 
     #[cfg(feature = "event-stream")]
+    fn expect_color_replies(&mut self) {
+        self.parser.color_queries.begin();
+    }
+
+    #[cfg(feature = "event-stream")]
     fn can_query(&self) -> bool {
         self.parser.buffer.is_empty()
             && self.parser.discarded_sequence.is_none()
@@ -239,6 +244,8 @@ struct Parser {
     buffer: Vec<u8>,
     internal_events: VecDeque<InternalEvent>,
     pending_escape_deadline: Option<Instant>,
+    #[cfg(feature = "event-stream")]
+    color_queries: pending_escape::ColorQueries,
     discarded_sequence: Option<DiscardedSequence>,
 }
 
@@ -263,6 +270,8 @@ impl Default for Parser {
             // is processed -> events pushed.
             internal_events: VecDeque::with_capacity(128),
             pending_escape_deadline: None,
+            #[cfg(feature = "event-stream")]
+            color_queries: pending_escape::ColorQueries::default(),
             discarded_sequence: None,
         }
     }
@@ -418,6 +427,10 @@ impl Parser {
 
             match parse_event(&self.buffer, more) {
                 Ok(Some(ie)) => {
+                    #[cfg(feature = "event-stream")]
+                    if matches!(ie, InternalEvent::ColorSchemeReporting(_)) {
+                        self.color_queries.finish();
+                    }
                     self.internal_events.push_back(ie);
                     self.buffer.clear();
                 }
