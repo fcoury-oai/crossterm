@@ -17,6 +17,7 @@ use crate::event::{
     Event,
     filter::{EventFilter, Filter},
     internal::{self, InternalEvent},
+    source::ReadGoal,
     sys::Waker,
 };
 
@@ -35,9 +36,8 @@ use crate::event::{
 pub struct EventStream {
     filter: StreamFilter,
     poll_internal_waker: Waker,
-    stream_wake_task_executed: Arc<AtomicBool>,
-    stream_wake_task_should_shutdown: Arc<AtomicBool>,
-    task_sender: SyncSender<Task>,
+    worker: Arc<Worker>,
+    task_sender: SyncSender<std::task::Waker>,
 }
 
 impl Default for EventStream {
@@ -48,31 +48,32 @@ impl Default for EventStream {
 
 impl EventStream {
     fn with_filter(filter: StreamFilter) -> Self {
-        let (task_sender, receiver) = mpsc::sync_channel::<Task>(1);
-
+        let (task_sender, receiver) = mpsc::sync_channel::<std::task::Waker>(1);
+        let worker = Arc::new(Worker::default());
+        let state = worker.clone();
         thread::spawn(move || {
-            while let Ok(task) = receiver.recv() {
+            while let Ok(waker) = receiver.recv() {
                 loop {
                     // A handoff may have consumed the cancellation wake while this
                     // worker waited for the reader lock.
                     let mut reader = internal::lock_event_reader();
-                    if task.stream_wake_task_should_shutdown.load(Ordering::SeqCst)
-                        || matches!(reader.poll(None, &filter), Ok(true))
+                    if state.shutdown.load(Ordering::SeqCst)
+                        || matches!(reader.poll_until(None, &filter, state.goal()), Ok(true))
                     {
                         break;
                     }
                 }
-                task.stream_wake_task_executed
-                    .store(false, Ordering::SeqCst);
-                task.stream_waker.wake();
+                #[cfg(unix)]
+                state.waiting_for_query.store(false, Ordering::SeqCst);
+                state.active.store(false, Ordering::SeqCst);
+                waker.wake();
             }
         });
 
         EventStream {
             filter,
             poll_internal_waker: internal::lock_event_reader().waker(),
-            stream_wake_task_executed: Arc::new(AtomicBool::new(false)),
-            stream_wake_task_should_shutdown: Arc::new(AtomicBool::new(false)),
+            worker,
             task_sender,
         }
     }
@@ -85,10 +86,22 @@ impl EventStream {
     }
 }
 
-struct Task {
-    stream_waker: std::task::Waker,
-    stream_wake_task_executed: Arc<AtomicBool>,
-    stream_wake_task_should_shutdown: Arc<AtomicBool>,
+#[derive(Debug, Default)]
+struct Worker {
+    active: AtomicBool,
+    shutdown: AtomicBool,
+    #[cfg(unix)]
+    waiting_for_query: AtomicBool,
+}
+
+impl Worker {
+    fn goal(&self) -> ReadGoal {
+        #[cfg(unix)]
+        if self.waiting_for_query.load(Ordering::SeqCst) {
+            return ReadGoal::EventOrQueryBoundary;
+        }
+        ReadGoal::Event
+    }
 }
 
 // Note to future me
@@ -126,24 +139,8 @@ impl EventStream {
         match internal::poll(Some(Duration::from_secs(0)), &self.filter) {
             Ok(true) => Poll::Ready(Some(internal::read(&self.filter))),
             Ok(false) => {
-                if !self
-                    .stream_wake_task_executed
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    // https://github.com/rust-lang/rust/issues/80486#issuecomment-752244166
-                    .unwrap_or_else(|x| x)
-                {
-                    let stream_waker = cx.waker().clone();
-                    let stream_wake_task_executed = self.stream_wake_task_executed.clone();
-                    let stream_wake_task_should_shutdown =
-                        self.stream_wake_task_should_shutdown.clone();
-
-                    stream_wake_task_should_shutdown.store(false, Ordering::SeqCst);
-
-                    let _ = self.task_sender.send(Task {
-                        stream_waker,
-                        stream_wake_task_executed,
-                        stream_wake_task_should_shutdown,
-                    });
+                if !self.worker.active.swap(true, Ordering::SeqCst) {
+                    let _ = self.task_sender.send(cx.waker().clone());
                 }
                 Poll::Pending
             }
@@ -197,8 +194,6 @@ pub enum TerminalEvent {
 #[derive(Debug)]
 pub struct TerminalEventStream {
     stream: EventStream,
-    #[cfg(unix)]
-    retry_query: AtomicBool,
 }
 
 impl Default for TerminalEventStream {
@@ -207,11 +202,7 @@ impl Default for TerminalEventStream {
         // A report already decoded by a previous owner cannot answer our first query.
         #[cfg(unix)]
         internal::lock_event_reader().discard_matching(InternalEvent::is_palette_report);
-        Self {
-            stream,
-            #[cfg(unix)]
-            retry_query: AtomicBool::new(false),
-        }
+        Self { stream }
     }
 }
 
@@ -222,17 +213,19 @@ impl TerminalEventStream {
     /// While a query is pending, check before each poll. Returns false without waiting
     /// when the reader is busy, a prior palette report is queued, input is unread, or a frame
     /// (including a bracketed paste or discarded sequence) is incomplete. New input may still
-    /// arrive after this check.
+    /// arrive after this check. After returning false, the next stream poll can wake the
+    /// caller to retry even if the completed frame was silently discarded.
     pub fn can_query(&self) -> bool {
-        if let Some(reader) = internal::try_lock_event_reader_for(Duration::ZERO) {
-            return reader.can_query();
+        let ready = internal::try_lock_event_reader_for(Duration::ZERO)
+            .is_some_and(|reader| reader.can_query());
+        let worker = &self.stream.worker;
+        let was_waiting = worker.waiting_for_query.swap(!ready, Ordering::SeqCst);
+        // An active worker may already be waiting for an event. Interrupt it once
+        // so it can pick up the new goal before blocking on the next read.
+        if !ready && !was_waiting && worker.active.load(Ordering::SeqCst) {
+            let _ = self.stream.poll_internal_waker.wake();
         }
-        // A previous stream's worker can briefly hold the reader on its way out.
-        // Its exit won't wake this stream. Give our caller another poll first.
-        if !self.stream.stream_wake_task_executed.load(Ordering::SeqCst) {
-            self.retry_query.store(true, Ordering::Relaxed);
-        }
-        false
+        ready
     }
 }
 
@@ -240,11 +233,6 @@ impl Stream for TerminalEventStream {
     type Item = io::Result<TerminalEvent>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        #[cfg(unix)]
-        if self.retry_query.swap(false, Ordering::Relaxed) {
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
         self.stream
             .poll_internal_event(cx)
             .map_ok(|event| match event {
@@ -333,9 +321,8 @@ impl ColorReportHandoff {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
-        self.stream_wake_task_should_shutdown
-            .store(true, Ordering::SeqCst);
-        if self.stream_wake_task_executed.load(Ordering::SeqCst) {
+        self.worker.shutdown.store(true, Ordering::SeqCst);
+        if self.worker.active.load(Ordering::SeqCst) {
             let _ = self.poll_internal_waker.wake();
         }
     }

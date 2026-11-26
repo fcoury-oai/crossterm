@@ -9,7 +9,10 @@ use crate::event::source::windows::WindowsEventSource;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
 use crate::event::{
-    filter::Filter, internal::InternalEvent, source::EventSource, timeout::PollTimeout,
+    filter::Filter,
+    internal::InternalEvent,
+    source::{EventSource, ReadGoal},
+    timeout::PollTimeout,
 };
 
 /// Can be used to read `InternalEvent`s.
@@ -89,8 +92,9 @@ impl InternalEventReader {
             if timeout.elapsed() {
                 return Ok(false);
             }
-            match source.try_read(timeout.leftover()) {
+            match source.read_until(timeout.leftover(), ReadGoal::EventOrQueryBoundary) {
                 Ok(Some(event)) => self.events.push_back(event),
+                Ok(None) if source.can_query() => break,
                 Ok(None) => return Ok(false),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
@@ -111,6 +115,16 @@ impl InternalEventReader {
     where
         F: Filter,
     {
+        self.poll_until(timeout, filter, ReadGoal::Event)
+    }
+
+    /// True when the caller can make progress toward its read goal.
+    pub(crate) fn poll_until(
+        &mut self,
+        timeout: Option<Duration>,
+        filter: &impl Filter,
+        goal: ReadGoal,
+    ) -> io::Result<bool> {
         for event in &self.events {
             if filter.eval(event) {
                 return Ok(true);
@@ -125,7 +139,11 @@ impl InternalEventReader {
         let poll_timeout = PollTimeout::new(timeout);
 
         loop {
-            let maybe_event = match event_source.try_read(poll_timeout.leftover()) {
+            let maybe_event = match event_source.read_until(poll_timeout.leftover(), goal) {
+                Ok(None) if goal.boundary_reached(event_source.as_ref()) => {
+                    self.events.extend(self.skipped_events.drain(..));
+                    return Ok(true);
+                }
                 Ok(None) => None,
                 Ok(Some(event)) => {
                     if filter.eval(&event) {
