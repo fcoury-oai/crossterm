@@ -211,6 +211,11 @@ impl EventSource for UnixInternalEventSource {
     }
 
     #[cfg(feature = "event-stream")]
+    fn finish_color_handoff(&mut self) {
+        self.parser.finish_color_handoff();
+    }
+
+    #[cfg(feature = "event-stream")]
     fn can_query(&self) -> bool {
         self.parser.buffer.is_empty()
             && self.parser.discarded_sequence.is_none()

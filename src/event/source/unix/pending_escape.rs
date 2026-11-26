@@ -31,12 +31,9 @@ pub(super) struct ColorQueries {
 #[cfg(feature = "event-stream")]
 impl ColorQueries {
     pub(super) fn begin(&mut self) {
-        let now = Instant::now();
-        if self.deadline.is_none_or(|deadline| deadline <= now) {
-            self.pending = 0;
-        }
+        // A key deadline can expire while its batch's status is still in flight.
         self.pending = self.pending.saturating_add(1);
-        self.deadline = Some(now + OSC_REPLY_TIMEOUT);
+        self.deadline = Some(Instant::now() + OSC_REPLY_TIMEOUT);
     }
 
     pub(super) fn finish(&mut self) {
@@ -84,6 +81,16 @@ impl Parser {
         #[cfg(feature = "event-stream")]
         let deadline = deadline.max(self.color_queries.prefix_deadline(&self.buffer));
         self.pending_escape_deadline = deadline;
+    }
+
+    #[cfg(feature = "event-stream")]
+    pub(super) fn finish_color_handoff(&mut self) {
+        self.color_queries = ColorQueries::default();
+        // A key can follow the marker in the same read. Remove its query
+        // extension without extending any existing key or OSC deadline.
+        let previous = self.pending_escape_deadline;
+        self.arm_escape_timeout();
+        self.pending_escape_deadline = previous.min(self.pending_escape_deadline);
     }
 
     pub(super) fn interrupt_pending_osc(&mut self, byte: u8) {
@@ -275,6 +282,13 @@ mod tests {
     fn outstanding_color_query_protects_the_selector_until_its_status_reply() {
         let (mut reader, mut writer) = super::super::tests::source_with_input();
         reader.expect_color_replies();
+        // Expiry restores the keyboard timeout without cancelling an in-flight status.
+        reader.parser.color_queries.deadline = Some(Instant::now());
+        writer.write_all(b"\x1b]").unwrap();
+        assert_eq!(
+            reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+            Some(alt_bracket())
+        );
         reader.expect_color_replies();
         writer.write_all(b"\x1b[?2031;1$y\x1b]").unwrap();
         assert_eq!(
@@ -309,6 +323,23 @@ mod tests {
         assert_eq!(
             parser.collect::<Vec<_>>(),
             [alt_bracket(), key('c', KeyModifiers::CONTROL)]
+        );
+    }
+
+    #[cfg(feature = "event-stream")]
+    #[test]
+    fn handoff_releases_a_key_buffered_after_the_marker_when_a_status_was_lost() {
+        let (mut reader, mut writer) = super::super::tests::source_with_input();
+        reader.expect_color_replies();
+        writer.write_all(b"\x1b[?62;22c\x1b]").unwrap();
+        assert_eq!(
+            reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+            Some(InternalEvent::PrimaryDeviceAttributes)
+        );
+        reader.finish_color_handoff();
+        assert_eq!(
+            reader.try_read(Some(Duration::from_secs(1))).unwrap(),
+            Some(alt_bracket())
         );
     }
 
