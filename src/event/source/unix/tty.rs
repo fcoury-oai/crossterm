@@ -18,6 +18,7 @@ use filedescriptor::{POLLIN, poll, pollfd};
 
 use super::{DiscardedSequence, SGR_MOUSE, advance_sgr_mouse};
 use crate::event::InputDiscardStatus;
+use crate::event::source::ReadGoal;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
 use crate::event::{internal::InternalEvent, source::EventSource, sys::unix::parse::parse_event};
@@ -112,6 +113,14 @@ fn read_complete(fd: &FileDesc, buf: &mut [u8]) -> io::Result<usize> {
 
 impl EventSource for UnixInternalEventSource {
     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
+        self.read_until(timeout, ReadGoal::Event)
+    }
+
+    fn read_until(
+        &mut self,
+        timeout: Option<Duration>,
+        goal: ReadGoal,
+    ) -> io::Result<Option<InternalEvent>> {
         if let Some(event) = self.parser.next() {
             return Ok(Some(event));
         }
@@ -143,6 +152,9 @@ impl EventSource for UnixInternalEventSource {
             || timeout.leftover().is_none_or(|t| !t.is_zero())
             || self.parser.pending_escape_expired()
         {
+            if goal.boundary_reached(self) {
+                return Ok(None);
+            }
             first_poll = false;
             match poll(&mut fds, self.parser.poll_timeout(timeout.leftover())) {
                 Err(filedescriptor::Error::Poll(e)) | Err(filedescriptor::Error::Io(e)) => {
