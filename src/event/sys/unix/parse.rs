@@ -1658,6 +1658,20 @@ mod tests {
     fn test_parse_csi_modify_other_keys() {
         // xterm modifyOtherKeys: CSI 27 ; modifiers ; codepoint ~
         assert_eq!(
+            parse_event(b"\x1B[27;2;13~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::SHIFT,
+            )))),
+        );
+        assert_eq!(
+            parse_event(b"\x1B[27;3;13~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::ALT,
+            )))),
+        );
+        assert_eq!(
             parse_event(b"\x1B[27;5;13~", false).unwrap(),
             Some(InternalEvent::Event(Event::Key(KeyEvent::new(
                 KeyCode::Enter,
@@ -1685,6 +1699,58 @@ mod tests {
                 KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             )))),
         );
+    }
+
+    #[test]
+    fn test_modify_other_keys_enter_matches_csi_u_and_preserves_plain_enter() {
+        for (modify_other_keys, csi_u) in [
+            (b"\x1B[27;2;13~".as_slice(), b"\x1B[13;2u".as_slice()),
+            (b"\x1B[27;3;233~".as_slice(), b"\x1B[233;3u".as_slice()),
+        ] {
+            assert_eq!(
+                parse_event(modify_other_keys, false).unwrap(),
+                parse_event(csi_u, false).unwrap(),
+            );
+        }
+        assert_eq!(
+            parse_event(b"\r", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_modify_other_keys_waits_for_complete_sequence() {
+        let sequence = b"\x1B[27;2;13~";
+        for end in 1..sequence.len() {
+            assert_eq!(parse_event(&sequence[..end], true).unwrap(), None);
+        }
+        assert_eq!(
+            parse_event(sequence, false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::SHIFT,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_modify_other_keys_rejects_malformed_sequences() {
+        for sequence in [
+            b"\x1B[27~".as_slice(),
+            b"\x1B[27;2~",
+            b"\x1B[27;;13~",
+            b"\x1B[27;2;~",
+            b"\x1B[27;256;13~",
+            b"\x1B[27;2;55296~",
+            b"\x1B[27;2;1114112~",
+            b"\x1B[27;2;13;1~",
+            b"\x1B[27;2;13;~",
+        ] {
+            assert!(parse_event(sequence, false).is_err(), "{sequence:?}");
+        }
     }
 
     #[test]
