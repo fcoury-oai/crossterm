@@ -279,38 +279,51 @@ impl Stream for TerminalEventStream {
 #[cfg(unix)]
 #[derive(Debug, Default)]
 pub struct ColorReportHandoff {
-    marker_pending: bool,
+    // None for the first DA1 request, then a distinct mode on each retry.
+    next_mode: Option<u16>,
 }
 
 #[cfg(unix)]
 impl ColorReportHandoff {
     /// Write a DA1 query to stdout at an input boundary and wait for its reply.
     /// Ordinary events stay queued in order. On timeout, retain ownership of input
-    /// and retry on the same handoff without issuing more queries. A retry waits
-    /// for the original marker if one was already sent.
+    /// and retry on the same handoff without issuing more queries. Retrying a sent
+    /// marker requires a terminal that echoes unknown private modes with status 0.
     pub fn drain(&mut self, timeout: Duration) -> io::Result<bool> {
-        use super::{filter::PrimaryDeviceAttributesFilter, timeout::PollTimeout};
+        use super::timeout::PollTimeout;
         use std::io::Write;
 
         let deadline = PollTimeout::new(Some(timeout));
         let Some(mut reader) = internal::try_lock_event_reader_for(timeout) else {
             return Ok(false);
         };
-        if !self.marker_pending {
+        // A screen transition may have discarded the previous reply. A fresh
+        // number prevents a late reply from completing this attempt instead.
+        let marker = {
             if !reader.prepare_color_handoff(&deadline)? {
                 return Ok(false);
             }
             let mut out = io::stdout().lock();
-            out.write_all(b"\x1b[c")?;
-            self.marker_pending = true;
+            let marker = if let Some(mode) = self.next_mode {
+                if !internal::HANDOFF_MODES.contains(&mode) {
+                    return Err(io::Error::other("exhausted terminal handoff markers"));
+                }
+                write!(out, "\x1b[?{mode}$p")?;
+                self.next_mode = Some(mode + 1);
+                InternalEvent::ColorHandoffMarker(mode)
+            } else {
+                out.write_all(b"\x1b[c")?;
+                self.next_mode = Some(*internal::HANDOFF_MODES.start());
+                InternalEvent::PrimaryDeviceAttributes
+            };
             out.flush()?;
-        }
+            marker
+        };
         // A cancelled stream can leave an interrupt in the source.
         while !deadline.elapsed() {
-            if reader.poll(deadline.leftover(), &PrimaryDeviceAttributesFilter)? {
-                reader.try_read(&PrimaryDeviceAttributesFilter);
-                reader.discard_matching(InternalEvent::is_palette_report);
-                self.marker_pending = false;
+            if reader.poll(deadline.leftover(), &marker)? {
+                reader.discard_matching(InternalEvent::is_handoff_report);
+                self.next_mode = None;
                 return Ok(true);
             }
         }

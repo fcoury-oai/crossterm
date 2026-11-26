@@ -11,6 +11,14 @@ pub(crate) trait Filter: Send + Sync + 'static {
     }
 }
 
+// Match a specific terminal reply, including the mode number on handoff retries.
+#[cfg(all(unix, feature = "event-stream"))]
+impl Filter for InternalEvent {
+    fn eval(&self, event: &InternalEvent) -> bool {
+        self == event
+    }
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone)]
 pub(crate) struct CursorPositionFilter;
@@ -75,6 +83,10 @@ impl Filter for EventFilter {
     // would grow the queue and let an old mode status answer a later subscriber's query.
     #[cfg(unix)]
     fn discard_unmatched(&self, event: &InternalEvent) -> bool {
+        #[cfg(feature = "event-stream")]
+        if matches!(event, InternalEvent::ColorHandoffMarker(_)) {
+            return true;
+        }
         matches!(
             event,
             InternalEvent::ColorSchemeChanged | InternalEvent::ColorSchemeReporting(_)

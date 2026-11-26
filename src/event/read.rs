@@ -97,9 +97,7 @@ impl InternalEventReader {
             }
         }
         // A stale DA1 may be queued behind the last key in the parser.
-        self.discard_matching(|event| {
-            event.is_palette_report() || matches!(event, InternalEvent::PrimaryDeviceAttributes)
-        });
+        self.discard_matching(InternalEvent::is_handoff_report);
         Ok(!timeout.elapsed())
     }
 
@@ -414,6 +412,24 @@ mod tests {
         let timeout = super::PollTimeout::new(Some(Duration::from_secs(1)));
         assert!(reader.prepare_color_handoff(&timeout).unwrap());
         assert_eq!(reader.events, VecDeque::from([first, last]));
+
+        // A late DA1 or a previous retry cannot answer the next numbered query.
+        reader
+            .events
+            .push_back(InternalEvent::PrimaryDeviceAttributes);
+        reader.discard_buffered_input().unwrap();
+        let retry = InternalEvent::ColorHandoffMarker(30001);
+        let key = InternalEvent::Event(Event::Key(crate::event::KeyCode::Char('x').into()));
+        reader.source = Some(Box::new(FakeSource::with_events(&[
+            InternalEvent::PrimaryDeviceAttributes,
+            InternalEvent::ColorHandoffMarker(30000),
+            key.clone(),
+            retry.clone(),
+        ])));
+        assert!(reader.poll(timeout.leftover(), &retry).unwrap());
+        assert_eq!(reader.try_read(&retry), Some(retry));
+        reader.discard_matching(InternalEvent::is_handoff_report);
+        assert_eq!(reader.events, VecDeque::from([key]));
     }
 
     #[test]
