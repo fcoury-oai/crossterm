@@ -37,28 +37,23 @@ fn advance_sgr_mouse(
         *discarded = Some(DiscardedSequence::Csi);
         return true;
     }
-    let Some(params) = buffer.strip_prefix(SGR_MOUSE) else {
-        return false;
-    };
-    let has_nan = params.len() <= b"255;65535;65535;".len() && params.contains(&b'N');
-    if !has_nan && byte != b'N' && discarded.is_none() {
+    if (discarded.is_none() && byte != b'N') || !buffer.starts_with(SGR_MOUSE) {
         return false;
     }
 
     buffer.push(byte);
     if matches_sgr_parameters(&buffer[SGR_MOUSE.len()..], false) {
+        *discarded = Some(DiscardedSequence::Csi);
         return true;
     }
     buffer.pop();
-    if has_nan {
-        let complete =
-            matches!(byte, b'M' | b'm') && matches_sgr_parameters(&buffer[SGR_MOUSE.len()..], true);
-        buffer.clear();
-        *discarded = None;
-        // If the report was interrupted, process this byte as fresh input.
-        return complete;
-    }
     if discarded.is_some() {
+        let params = &buffer[SGR_MOUSE.len()..];
+        let terminator = matches!(byte, b'M' | b'm') && matches_sgr_parameters(params, true);
+        if params.contains(&b'N') && !terminator {
+            // Process the interrupting byte as fresh input.
+            *discarded = None;
+        }
         buffer.clear();
     }
     false

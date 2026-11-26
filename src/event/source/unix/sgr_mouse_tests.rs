@@ -1,23 +1,28 @@
-use super::Parser;
+use super::{InputDiscardStatus, Parser};
 use crate::event::{Event, InternalEvent, KeyCode};
 
 #[test]
 fn nan_mouse_reports_leave_the_next_key_at_every_split() {
-    for report in [
-        "\x1b[<16;NaN;NaNm",
-        "\x1b[<0;NaN;NaNm",
-        "\x1b[<64;NaN;12M",
-        "\x1b[<0;32;NaNm",
+    let x = KeyCode::Char('x');
+    for (input, expected) in [
+        ("\x1b[<16;NaN;NaNmx", x),
+        ("\x1b[<64;NaN;12Mx", x),
+        ("\x1b[<0;32;NaN;mx", x),
+        ("\x1b[<16;Nx", x),
+        ("\x1b[<0;Nax", x),
+        ("\x1b[<0;NaN;NaNx", x),
+        ("\x1b[<16;NaNm", KeyCode::Char('m')),
+        ("\x1b[<16;NaN;Na\x1b[A", KeyCode::Up),
     ] {
-        let input = format!("{report}x");
-        for split in 0..=input.len() {
+        let bytes = input.as_bytes();
+        for split in 0..=bytes.len() {
             let mut parser = Parser::default();
-            parser.buffer_external_input(&input.as_bytes()[..split]);
-            parser.advance(&input.as_bytes()[split..], false);
+            parser.buffer_external_input(&bytes[..split]);
+            parser.advance(&bytes[split..], false);
             assert_eq!(
                 parser.collect::<Vec<_>>(),
-                [InternalEvent::Event(Event::Key(KeyCode::Char('x').into()))],
-                "{report:?} split at {split}"
+                [InternalEvent::Event(Event::Key(expected.into()))],
+                "{input:?} split at {split}"
             );
         }
     }
@@ -29,10 +34,19 @@ fn discarded_nan_mouse_report_does_not_leak_its_delayed_suffix() {
     for split in 1..report.len() {
         let mut parser = Parser::default();
         parser.advance(&report[..split], true);
-        parser.discard_buffered_input();
         for byte in &report[split..] {
+            assert!(parser.next().is_none());
+            assert_ne!(
+                parser.discard_buffered_input(),
+                InputDiscardStatus::Complete
+            );
             parser.advance(std::slice::from_ref(byte), false);
         }
+        assert!(parser.next().is_none());
+        assert_eq!(
+            parser.discard_buffered_input(),
+            InputDiscardStatus::Complete
+        );
         parser.advance(b"x", false);
         assert_eq!(
             parser.collect::<Vec<_>>(),
@@ -40,35 +54,6 @@ fn discarded_nan_mouse_report_does_not_leak_its_delayed_suffix() {
             "split at {split}"
         );
     }
-}
-
-#[test]
-fn interrupted_nan_mouse_report_reprocesses_the_next_byte() {
-    for prefix in [
-        "\x1b[<16;N",
-        "\x1b[<0;Na",
-        "\x1b[<0;NaN;NaN",
-        "\x1b[<0;NaN;12345",
-    ] {
-        let mut parser = Parser::default();
-        parser.advance(prefix.as_bytes(), false);
-        parser.advance(b"x", false);
-        assert_eq!(
-            parser.collect::<Vec<_>>(),
-            [InternalEvent::Event(Event::Key(KeyCode::Char('x').into()))],
-            "{prefix:?}"
-        );
-    }
-}
-
-#[test]
-fn truncated_nan_mouse_report_preserves_a_fresh_escape_sequence() {
-    let mut parser = Parser::default();
-    parser.advance(b"\x1b[<16;NaN;Na\x1b[A", false);
-    assert_eq!(
-        parser.collect::<Vec<_>>(),
-        [InternalEvent::Event(Event::Key(KeyCode::Up.into()))]
-    );
 }
 
 #[cfg(feature = "bracketed-paste")]
