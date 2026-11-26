@@ -7,6 +7,7 @@ use std::{
 use mio::{Events, Interest, Poll, Token, unix::SourceFd};
 use signal_hook_mio::v1_0::Signals;
 
+use crate::event::source::ReadGoal;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
 use crate::event::{
@@ -76,12 +77,23 @@ impl UnixInternalEventSource {
 
 impl EventSource for UnixInternalEventSource {
     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
+        self.read_until(timeout, ReadGoal::Event)
+    }
+
+    fn read_until(
+        &mut self,
+        timeout: Option<Duration>,
+        goal: ReadGoal,
+    ) -> io::Result<Option<InternalEvent>> {
         if let Some(event) = self.parser.next() {
             return Ok(Some(event));
         }
         let timeout = PollTimeout::new(timeout);
 
         loop {
+            if goal.boundary_reached(self) {
+                return Ok(None);
+            }
             // Finish the previous readiness batch before returning to a readable TTY. A wake
             // behind a cursor reply must still interrupt a filtered, otherwise unbounded poll.
             let resuming_batch = !self.pending_events.is_empty();
@@ -469,7 +481,7 @@ mod tests {
     use crate::terminal::sys::file_descriptor::FileDesc;
     use std::{io::Write, os::unix::net::UnixStream};
 
-    fn source_with_input() -> (UnixInternalEventSource, UnixStream) {
+    pub(super) fn source_with_input() -> (UnixInternalEventSource, UnixStream) {
         let (reader, writer) = UnixStream::pair().unwrap();
         #[cfg(feature = "libc")]
         let reader = {
