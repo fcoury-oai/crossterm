@@ -65,6 +65,10 @@ pub(crate) trait EventSource: Sync + Send {
     #[cfg(all(unix, feature = "event-stream"))]
     fn can_query(&self) -> bool;
 
+    /// Give a possible OSC color prefix time to finish until the status reply.
+    #[cfg(all(unix, feature = "event-stream"))]
+    fn expect_color_replies(&mut self);
+
     /// Remove matching responses already decoded into the source's local queue.
     #[cfg(all(unix, feature = "event-stream"))]
     fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool);
