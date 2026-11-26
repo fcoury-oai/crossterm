@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
-#[cfg(unix)]
 use crate::event::KeyboardEnhancementFlags;
 use crate::event::{Event, filter::Filter, read::InternalEventReader, timeout::PollTimeout};
 
@@ -70,29 +69,23 @@ pub(crate) enum InternalEvent {
     /// An event.
     Event(Event),
     /// A cursor position (`col`, `row`).
-    #[cfg(unix)]
     CursorPosition(u16, u16),
     /// The progressive keyboard enhancement flags enabled by the terminal.
-    #[cfg(unix)]
     KeyboardEnhancementFlags(KeyboardEnhancementFlags),
     /// Attributes and architectural class of the terminal.
-    #[cfg(unix)]
     PrimaryDeviceAttributes,
     /// OSC color response (`slot`, `payload`).
-    #[cfg(unix)]
     OscColor { slot: u8, payload: OscColorPayload },
     /// A DEC mode 2031 palette-change notification.
-    #[cfg(unix)]
     ColorSchemeChanged,
     /// DECRPM for mode 2031. Only modes 1 (set) and 2 (reset) are mutable.
-    #[cfg(unix)]
     ColorSchemeReporting(u8),
     /// Echo of a numbered mode query used when retrying a timed-out handoff.
-    #[cfg(all(unix, feature = "event-stream"))]
+    #[cfg(feature = "event-stream")]
     ColorHandoffMarker(u16),
 }
 
-#[cfg(all(unix, feature = "event-stream"))]
+#[cfg(feature = "event-stream")]
 pub(crate) const HANDOFF_MODES: std::ops::RangeInclusive<u16> = 30000..=32767;
 
 #[cfg(all(unix, feature = "event-stream"))]
@@ -116,7 +109,6 @@ impl InternalEvent {
 }
 
 /// Parsed payload of an OSC color response.
-#[cfg(unix)]
 #[derive(Debug, PartialOrd, PartialEq, Hash, Clone, Eq)]
 pub(crate) enum OscColorPayload {
     /// Parsed RGB values (always 8-bit per channel).

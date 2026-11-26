@@ -128,7 +128,6 @@ impl Stream for EventStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.poll_internal_event(cx).map_ok(|event| match event {
             InternalEvent::Event(event) => event,
-            #[cfg(unix)]
             _ => unreachable!(),
         })
     }
@@ -271,7 +270,6 @@ impl Stream for TerminalEventStream {
                 InternalEvent::ColorSchemeReporting(status) => {
                     TerminalEvent::ColorSchemeReporting(status)
                 }
-                #[cfg(unix)]
                 _ => unreachable!(),
             })
     }
