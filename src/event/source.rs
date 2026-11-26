@@ -77,6 +77,12 @@ pub(crate) trait EventSource: Sync + Send {
     #[cfg(all(unix, feature = "event-stream"))]
     fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool);
 
+    /// Can a buffered escape resolve without further input?
+    #[cfg(unix)]
+    fn has_pending_escape(&self) -> bool {
+        false
+    }
+
     /// Returns a `Waker` allowing to wake/force the `try_read` method to return `Ok(None)`.
     #[cfg(feature = "event-stream")]
     fn waker(&self) -> Waker;
