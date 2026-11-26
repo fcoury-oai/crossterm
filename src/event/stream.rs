@@ -219,12 +219,13 @@ impl TerminalEventStream {
         self.check_query(|reader| reader.can_query())
     }
 
-    /// Prepare to write OSC 10/11 queries followed by a mode 2031 status request.
+    /// Prepare a batch ending in one mode 2031 status request.
     ///
-    /// On success, send that batch immediately. While its status reply is pending,
-    /// a fragmented OSC selector gets the color reply timeout (up to two seconds
-    /// from the latest query). An ambiguous legacy Escape or Alt+] in that interval
-    /// may wait for more bytes. The status reply restores the usual key deadline.
+    /// Call this for every batch, including status-only probes to check mode
+    /// ownership. On success, send the batch immediately. While replies are
+    /// outstanding, a fragmented OSC 10/11 selector gets up to two seconds from
+    /// the latest query. An ambiguous legacy Escape or Alt+] may wait until that
+    /// deadline or until all status replies arrive, whichever comes first.
     /// On failure, retry before the next stream poll as with [`Self::can_query`].
     pub fn prepare_color_query(&self) -> bool {
         self.check_query(|reader| reader.prepare_color_query())
@@ -292,9 +293,12 @@ pub struct ColorReportHandoff {
 #[cfg(unix)]
 impl ColorReportHandoff {
     /// Write a DA1 query to stdout at an input boundary and wait for its reply.
-    /// Ordinary events stay queued in order. On timeout, retain ownership of input
-    /// and retry on the same handoff without issuing more queries. Retrying a sent
-    /// marker requires a terminal that echoes unknown private modes with status 0.
+    /// Ordinary events stay queued in order. On failure, keep ownership of input
+    /// and retain this handoff for the next attempt. If you cancel the transfer,
+    /// you may recreate the stream and issue palette queries before retrying.
+    /// Do not issue other DA1 queries while a handoff reply may still arrive.
+    /// Retrying a sent marker requires a terminal that echoes unknown private
+    /// modes with status 0.
     pub fn drain(&mut self, timeout: Duration) -> io::Result<bool> {
         use super::timeout::PollTimeout;
         use std::io::Write;
@@ -328,7 +332,7 @@ impl ColorReportHandoff {
         // A cancelled stream can leave an interrupt in the source.
         while !deadline.elapsed() {
             if reader.poll(deadline.leftover(), &marker)? {
-                reader.discard_matching(InternalEvent::is_handoff_report);
+                reader.finish_color_handoff();
                 self.next_mode = None;
                 return Ok(true);
             }
