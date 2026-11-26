@@ -193,7 +193,7 @@ impl EventSource for UnixInternalEventSource {
     }
 
     fn buffer_input(&mut self, input: &[u8], events: &mut VecDeque<InternalEvent>) {
-        self.parser.buffer_external_input(input);
+        self.parser.buffer_replayed_input(input);
         events.extend(
             self.parser
                 .by_ref()
@@ -244,6 +244,7 @@ struct Parser {
     buffer: Vec<u8>,
     internal_events: VecDeque<InternalEvent>,
     pending_escape_deadline: Option<Instant>,
+    replayed_color_prefix: bool,
     #[cfg(feature = "event-stream")]
     color_queries: pending_escape::ColorQueries,
     discarded_sequence: Option<DiscardedSequence>,
@@ -270,6 +271,7 @@ impl Default for Parser {
             // is processed -> events pushed.
             internal_events: VecDeque::with_capacity(128),
             pending_escape_deadline: None,
+            replayed_color_prefix: false,
             #[cfg(feature = "event-stream")]
             color_queries: pending_escape::ColorQueries::default(),
             discarded_sequence: None,
