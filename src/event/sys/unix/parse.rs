@@ -307,6 +307,7 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
 
 /// A truncated cell report must not absorb the start of another input sequence or a key.
 /// Keep the ambiguous modified PageDown prefix (CSI 6; modifier ~) on its normal path.
+#[cfg(unix)]
 pub(crate) fn interrupted_cell_size_report(buffer: &[u8], next: u8) -> bool {
     if buffer != b"\x1b[6" && !buffer.starts_with(b"\x1b[6;") {
         return false;
