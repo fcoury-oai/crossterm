@@ -87,7 +87,13 @@ pub(crate) enum InternalEvent {
     /// DECRPM for mode 2031. Only modes 1 (set) and 2 (reset) are mutable.
     #[cfg(unix)]
     ColorSchemeReporting(u8),
+    /// Echo of a numbered mode query used when retrying a timed-out handoff.
+    #[cfg(all(unix, feature = "event-stream"))]
+    ColorHandoffMarker(u16),
 }
+
+#[cfg(all(unix, feature = "event-stream"))]
+pub(crate) const HANDOFF_MODES: std::ops::RangeInclusive<u16> = 30000..=32767;
 
 #[cfg(all(unix, feature = "event-stream"))]
 impl InternalEvent {
@@ -98,6 +104,14 @@ impl InternalEvent {
                 | Self::ColorSchemeChanged
                 | Self::ColorSchemeReporting(_)
         )
+    }
+
+    pub(crate) fn is_handoff_report(&self) -> bool {
+        self.is_palette_report()
+            || matches!(
+                self,
+                Self::PrimaryDeviceAttributes | Self::ColorHandoffMarker(_)
+            )
     }
 }
 
