@@ -110,6 +110,10 @@ impl Parser {
         }
     }
 
+    pub(super) fn has_pending_escape_key(&self) -> bool {
+        self.pending_escape_deadline.is_some() && !self.has_osc_selector()
+    }
+
     pub(super) fn pending_escape_expired(&self) -> bool {
         self.pending_escape_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
@@ -323,6 +327,37 @@ mod tests {
         assert_eq!(
             parser.collect::<Vec<_>>(),
             [alt_bracket(), key('c', KeyModifiers::CONTROL)]
+        );
+    }
+
+    #[cfg(feature = "event-stream")]
+    #[test]
+    fn transition_discard_waits_for_escape_but_strict_discard_quarantines_it() {
+        use crate::event::{InputDiscardStatus, filter::EventFilter, read::InternalEventReader};
+
+        let (source, _writer) = super::super::tests::source_with_input();
+        let mut reader = InternalEventReader::with_test_source(source);
+        assert!(reader.prepare_color_query());
+        reader.buffer_input(b"\x1b").unwrap();
+        assert_eq!(
+            reader.discard_buffered_input_after_poll().unwrap(),
+            InputDiscardStatus::ControlSequenceInProgress
+        );
+        reader.buffer_input(b"y").unwrap();
+        assert_eq!(
+            reader.try_read(&EventFilter),
+            Some(key('y', KeyModifiers::ALT))
+        );
+
+        reader.buffer_input(b"\x1b").unwrap();
+        assert_eq!(
+            reader.discard_buffered_input().unwrap(),
+            InputDiscardStatus::BracketedPasteInProgress
+        );
+        reader.buffer_input(b"yx").unwrap();
+        assert_eq!(
+            reader.try_read(&EventFilter),
+            Some(key('x', KeyModifiers::NONE))
         );
     }
 

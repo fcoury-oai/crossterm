@@ -244,6 +244,10 @@ impl EventSource for UnixInternalEventSource {
         self.parser.discard_buffered_input()
     }
 
+    fn has_pending_escape(&self) -> bool {
+        self.parser.has_pending_escape_key()
+    }
+
     #[cfg(feature = "event-stream")]
     fn expect_color_replies(&mut self) {
         self.parser.color_queries.begin();
