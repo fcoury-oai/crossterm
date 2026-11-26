@@ -117,6 +117,14 @@ impl InternalEventReader {
         Ok(!timeout.elapsed())
     }
 
+    #[cfg(all(feature = "event-stream", unix))]
+    pub(crate) fn finish_color_handoff(&mut self) {
+        self.discard_matching(InternalEvent::is_handoff_report);
+        if let Some(source) = &mut self.source {
+            source.finish_color_handoff();
+        }
+    }
+
     /// Returns a `Waker` allowing to wake/force the `poll` method to return `Ok(false)`.
     #[cfg(feature = "event-stream")]
     pub(crate) fn waker(&self) -> Waker {
@@ -458,7 +466,7 @@ mod tests {
         ])));
         assert!(reader.poll(timeout.leftover(), &retry).unwrap());
         assert_eq!(reader.try_read(&retry), Some(retry));
-        reader.discard_matching(InternalEvent::is_handoff_report);
+        reader.finish_color_handoff();
         assert_eq!(reader.events, VecDeque::from([key]));
     }
 
@@ -714,6 +722,9 @@ mod tests {
 
         #[cfg(all(feature = "event-stream", unix))]
         fn expect_color_replies(&mut self) {}
+
+        #[cfg(all(feature = "event-stream", unix))]
+        fn finish_color_handoff(&mut self) {}
 
         #[cfg(all(feature = "event-stream", unix))]
         fn can_query(&self) -> bool {

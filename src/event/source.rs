@@ -69,6 +69,10 @@ pub(crate) trait EventSource: Sync + Send {
     #[cfg(all(unix, feature = "event-stream"))]
     fn expect_color_replies(&mut self);
 
+    /// A matched handoff marker rules out any further replies to earlier queries.
+    #[cfg(all(unix, feature = "event-stream"))]
+    fn finish_color_handoff(&mut self);
+
     /// Remove matching responses already decoded into the source's local queue.
     #[cfg(all(unix, feature = "event-stream"))]
     fn discard_matching(&mut self, matches: fn(&InternalEvent) -> bool);
