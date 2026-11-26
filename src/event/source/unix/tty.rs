@@ -986,34 +986,19 @@ mod tests {
             InputDiscardStatus::BracketedPasteInProgress
         );
 
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let producer = std::thread::spawn(move || {
-            let chunk = [b'y'; super::TTY_BUFFER_SIZE];
-            for index in 0..65_536 {
-                if writer.write_all(&chunk).is_err() {
-                    break;
-                }
-                if index == 0 {
-                    ready_tx.send(()).unwrap();
-                }
-            }
-        });
-        ready_rx.recv().unwrap();
-
+        // Keep the socket readable across two expired polls without racing a writer.
+        let paste = [b'y'; super::TTY_BUFFER_SIZE * 3];
+        writer.write_all(&paste).unwrap();
+        let mut remaining = paste.len() as u64;
         for _ in 0..2 {
-            assert_eq!(
-                source.try_read(Some(Duration::from_millis(10))).unwrap(),
-                None
-            );
+            assert_eq!(source.try_read(Some(Duration::ZERO)).unwrap(), None);
             assert_eq!(
                 source.discard_buffered_input(),
                 InputDiscardStatus::BracketedPasteInProgress
             );
-            let fd = unsafe { rustix::fd::BorrowedFd::borrow_raw(source.tty.raw_fd()) };
-            assert!(rustix::io::ioctl_fionread(fd).unwrap() > 0);
+            let unread = super::super::unread_bytes(&source.tty).unwrap();
+            assert!(unread > 0 && unread < remaining);
+            remaining = unread;
         }
-
-        drop(source);
-        producer.join().unwrap();
     }
 }
