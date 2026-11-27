@@ -7,6 +7,10 @@ permissions:
   contents: read
 jobs:
   codex:
+    strategy:
+      fail-fast: false
+      matrix:
+        klid: ['00000409', '00020419', '0002042b']
     timeout-minutes: 6
     runs-on: windows-2025
     env:
@@ -33,4 +37,5 @@ jobs:
           $cli = Get-ChildItem released -Recurse -Filter 'codex*x86_64*.exe' | Select-Object -First 1
           New-Item -Type Directory pair/before
           Copy-Item $cli.FullName pair/before/codex.exe
-      - run: python -u lab/matrix.py pair/before/codex.exe
+      - name: Compare observable Codex actions
+        run: python -u lab/matrix.py '${{ matrix.klid }}'
