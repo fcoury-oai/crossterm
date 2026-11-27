@@ -1,0 +1,40 @@
+name: Windows Terminal parser comparison
+on:
+  push:
+    branches: ['codex/55688-native-lab']
+    paths: ['.github/workflows/55688-probe.yml', 'lab/probe.py', 'lab/probe.rs']
+permissions:
+  contents: read
+jobs:
+  records:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Get Windows Terminal 1.24.12741.0
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/microsoft/terminal/releases/download/v1.24.12741.0/Microsoft.WindowsTerminal_1.24.12741.0_x64.zip'
+          curl.exe --retry 3 -fsSL $url -o terminal.zip
+          if ((Get-FileHash terminal.zip).Hash -ne '7aaa8321064c45d5af79205db13deb87f146f644bd8abdfae29f0155d7ce744e') { throw 'bad checksum' }
+          Expand-Archive terminal.zip wt
+          $terminal = Get-ChildItem wt -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -Type File (Join-Path $terminal.DirectoryName .portable)
+          "WT_EXE=$($terminal.FullName)" >> $env:GITHUB_ENV
+      - name: Build event readers on the two revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63 a6010533ecaf8e135902c1a5c7f44f08e00fd796
+          git worktree add --detach library 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63
+          cd library
+          cp ../lab/probe.rs examples/probe.rs
+          printf '\n[[example]]\nname = "probe"\npath = "examples/probe.rs"\n' >> Cargo.toml
+          for side in before after; do
+            if [[ "$side" == "after" ]]; then git checkout --detach a6010533ecaf8e135902c1a5c7f44f08e00fd796; fi
+            git rev-parse HEAD
+            cargo build --locked --example probe
+            cp target/debug/examples/probe.exe "../$side.exe"
+          done
+      - run: python -u lab/probe.py
