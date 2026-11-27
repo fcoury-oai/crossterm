@@ -400,18 +400,56 @@ def launch(wt, variant):
     return json.loads((ROOT / f'{variant}.json').read_text())
 
 
+def summarize(report):
+    builds = report['builds']
+    lines = [
+        '## Windows Terminal ' + report['terminal'], '',
+        f"Codex source `{report['codex_source']}` on {report['os']} (revision {report['windows_revision']}).",
+        '',
+    ]
+    for build in builds:
+        lines.append(
+            f"- **{build['variant'].capitalize()}** uses Crossterm `{build['crossterm']}`. "
+            f"The exported drafts came from `{build['version']}` with SHA-256 `{build['binary_sha256']}`."
+        )
+    headers = [build['variant'].capitalize() + ' draft' for build in builds]
+    for direct in (True, False):
+        title = 'Windows clipboard via Ctrl+Shift+V' if direct else 'Console records via WriteConsoleInputW'
+        lines.extend(['', '### ' + title, '', '| Method | Input | ' + ' | '.join(headers) + ' |',
+                      '| --- ' * (len(builds) + 2) + '|'])
+        for group in zip(*(b['cases'] for b in builds), strict=True):
+            row = group[0]
+            if (row['method'] == 'clipboard') == direct:
+                cells = [row['method'], f"`{row['input']}`"]
+                for result in group:
+                    cells.append(f"`{result['draft']}` (`{' '.join(result['actual_points'])}`)")
+                lines.append('| ' + ' | '.join(cells) + ' |')
+    lines.extend(['', 'Ctrl+G wrote each composer draft to a UTF-8 file. '
+                  'The results artifact contains those bytes and the separate ReadConsoleInputW captures.'])
+    with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+        summary.write('\n'.join(lines) + '\n')
+
+
 def outside(wt, variants):
     ROOT.mkdir()
     (wt.parent / '.portable').touch()
     report = dict(
         os=platform.platform(),
+        windows_revision=os.getenv('WINDOWS_REVISION'),
         terminal=os.environ['WT_VERSION'],
         terminal_exe_sha256=hashlib.sha256(wt.read_bytes()).hexdigest(),
         build_id=os.getenv('BUILD_ID'),
+        codex_source=os.getenv('CODEX_SOURCE'),
         run_id=os.environ['GITHUB_RUN_ID'],
         builds=[launch(wt, variant) for variant in variants],
         records=launch(wt, 'records'),
     )
+    if report['build_id']:
+        for build in report['builds']:
+            variant = build['variant'].upper()
+            build['crossterm'] = os.environ[f'PIN_{variant}']
+            assert build['binary_sha256'].lower() == os.environ[f'EXE_{variant}'].lower()
+        summarize(report)
     (ROOT / 'results.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     assert [v['variant'] for v in report['builds']] == variants
     for build in report['builds']:

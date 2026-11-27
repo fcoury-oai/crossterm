@@ -8,6 +8,7 @@ permissions:
   actions: read
 jobs:
   paste:
+    name: Windows Terminal ${{ matrix.version }}
     runs-on: windows-2025
     strategy:
       fail-fast: false
@@ -16,7 +17,12 @@ jobs:
     env:
       WT_VERSION: ${{ matrix.version }}
       WT_SHA: ${{ matrix.sha }}
-      BUILD_ID: ''
+      BUILD_ID: '45929020274'
+      CODEX_SOURCE: bee5dc55ac118d9136171fed55ffd89af26f8d21
+      PIN_BEFORE: 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63
+      PIN_AFTER: 3d70dbc32fa37923e6cae406ce8e75f8abf301f4
+      EXE_BEFORE: 'A4F1A38B32E35289A8BB56CE6EBDFFFF210CB37B6405F0C8B9D6EAEA4321065C'
+      EXE_AFTER: '08FF8BB1434C0C3A5C936F3F5132A6BFD71B04C0DE8C52FEADF43003794084FD'
       PYTHONUTF8: 1
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -34,7 +40,9 @@ jobs:
           "TERMINAL=$terminal" >> $env:GITHUB_ENV
           (Get-Item $terminal).VersionInfo
           Get-CimInstance Win32_OperatingSystem | Format-List Caption,Version,BuildNumber,OSArchitecture
-          (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion').UBR
+          $revision = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion').UBR
+          "WINDOWS_REVISION=$revision" >> $env:GITHUB_ENV
+          $revision
           "Session $((Get-Process -Id $PID).SessionId) is interactive: $([Environment]::UserInteractive)"
           python --version
       - name: Fetch reference release to check the harness
@@ -64,5 +72,5 @@ jobs:
           path: |
             ${{ runner.temp }}/paste-37578/*.utf8
             ${{ runner.temp }}/paste-37578/results.json
-          retention-days: 7
+          retention-days: 90
 
