@@ -1,5 +1,8 @@
 //! Regression coverage for characters delivered through Windows console input records.
 
+#[path = "surrogate_tests.rs"]
+mod surrogate_tests;
+
 use super::*;
 use crate::event::KeyEventState;
 use crossterm_winapi::InputRecord;
