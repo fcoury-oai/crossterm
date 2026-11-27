@@ -1,0 +1,36 @@
+name: Windows Codex input calibration
+on:
+  push:
+    branches: ['codex/55688-native-lab']
+    paths: ['.github/workflows/55688-codex.yml', 'lab/matrix.py', 'lab/screen.ps1']
+permissions:
+  contents: read
+jobs:
+  codex:
+    timeout-minutes: 6
+    runs-on: windows-2025
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Get Windows Terminal 1.24.12741.0
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/microsoft/terminal/releases/download/v1.24.12741.0/Microsoft.WindowsTerminal_1.24.12741.0_x64.zip'
+          curl.exe --retry 3 -fsSL $url -o terminal.zip
+          if ((Get-FileHash terminal.zip).Hash -ne '7aaa8321064c45d5af79205db13deb87f146f644bd8abdfae29f0155d7ce744e') { throw 'bad checksum' }
+          Expand-Archive terminal.zip wt
+          $terminal = Get-ChildItem wt -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -Type File (Join-Path $terminal.DirectoryName .portable)
+          "WT_EXE=$($terminal.FullName)" >> $env:GITHUB_ENV
+      - name: Install released CLI for calibration
+        run: |
+          curl.exe --retry 3 -fsSL https://github.com/openai/codex/releases/download/rust-v0.172.0/codex-x86_64-pc-windows-msvc.exe.zip -o cli.zip
+          if ((Get-FileHash cli.zip).Hash -ne 'c4292fc0414fc78682e733ff570ddec377922ebe1a29925a6d5bcc5aeff43ea0') { throw 'bad checksum' }
+          Expand-Archive cli.zip released
+          $cli = Get-ChildItem released -Recurse -Filter 'codex*x86_64*.exe' | Select-Object -First 1
+          New-Item -Type Directory pair/before
+          Copy-Item $cli.FullName pair/before/codex.exe
+      - run: python -u lab/matrix.py pair/before/codex.exe
