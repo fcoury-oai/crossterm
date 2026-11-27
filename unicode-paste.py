@@ -76,6 +76,9 @@ GetTitle = bind(U, "GetWindowTextW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
 GetClass = bind(U, "GetClassNameW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
 SetForeground = bind(U, "SetForegroundWindow", w.BOOL, w.HWND)
 FindWindow = bind(U, "FindWindowW", w.HWND, w.LPCWSTR, w.LPCWSTR)
+WindowPid = bind(U, "GetWindowThreadProcessId", w.DWORD, w.HWND, Ptr)
+OpenProcess = bind(K, "OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+ProcessName = bind(K, "QueryFullProcessImageNameW", w.BOOL, w.HANDLE, w.DWORD, w.LPWSTR, Ptr)
 SendInput = bind(U, "SendInput", w.UINT, w.UINT, Ptr, c.c_int)
 stdin = GetStdHandle(-10)
 
@@ -127,6 +130,21 @@ def shortcut(*keys):
     check(SendInput(len(batch), batch, c.sizeof(Input)) == len(batch))
 
 
+def check_terminal(wt):
+    hwnd = wait_for('Windows Terminal foreground', terminal_window)
+    pid = w.DWORD()
+    check(WindowPid(hwnd, c.byref(pid)))
+    process = check(OpenProcess(0x1000, False, pid.value))
+    try:
+        path = c.create_unicode_buffer(32768)
+        size = w.DWORD(len(path))
+        check(ProcessName(process, 0, path, c.byref(size)))
+        log('foreground terminal executable', path.value)
+        assert os.path.samefile(path.value, wt)
+    finally:
+        Close(process)
+
+
 def paste(text):
     hwnd = wait_for('Windows Terminal foreground', terminal_window)
     data = (text + '\0').encode('utf-16-le')
@@ -164,9 +182,11 @@ def describe(records):
     ]
 
 
-def raw_probe():
+def raw_probe(console_mode):
     previous = mode()
-    check(SetConsoleMode(stdin, previous & ~(VT_INPUT | 7)))
+    check(SetConsoleMode(stdin, console_mode))
+    log('raw reader input mode', hex(mode()))
+    assert mode() == console_mode
     captures = {}
     try:
         for text in CASES:
@@ -187,6 +207,10 @@ def raw_probe():
                 log('clipboard records', ascii(text), ' '.join(
                     f"{r.unit:04X}{'d' if r.down else 'u'}" for r in records if r.unit >= 0x20
                 ))
+            if ord(text[1]) > 0xFFFF:
+                expected = [(r.unit, r.down, r.vk) for r in records_for(text[1], True)]
+                actual = [(r.unit, r.down, r.vk) for r in records if 0xD800 <= r.unit <= 0xDFFF]
+                assert actual == expected, (text, expected, actual)
     finally:
         check(SetConsoleMode(stdin, previous))
     return captures
@@ -332,37 +356,63 @@ animations = false
     return result
 
 
-def inside(variants):
+def inside(wt, variant):
+    global TITLE
+    TITLE += ' ' + variant
     log('Windows', platform.platform(), 'WT_SESSION', bool(os.getenv('WT_SESSION')), 'foreground', ascii(foreground()))
     assert os.getenv('WT_SESSION')
-    wait_for('Windows Terminal', terminal_window)
-    result = dict(os=platform.platform(), terminal=os.environ['WT_VERSION'], records=raw_probe(), builds=[])
-    for variant in variants:
+    check_terminal(wt)
+    mode_file = ROOT / 'mode'
+    if variant == 'records':
+        result = raw_probe(int(mode_file.read_text(), 16))
+    else:
         directory = Path(os.environ['RUNNER_TEMP']) / variant
         log('executable directory', directory)
         exe, = directory.rglob('codex.exe')
-        result['builds'].append(test_codex(variant, exe))
-    (ROOT / 'results.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+        result = test_codex(variant, exe)
+        (current_mode,) = {row['mode'] for row in result['cases']}
+        if mode_file.exists():
+            assert mode_file.read_text() == current_mode
+        else:
+            mode_file.write_text(current_mode)
+    (ROOT / f'{variant}.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
 
 
-def outside(wt, variants):
-    ROOT.mkdir()
-    (wt.parent / '.portable').touch()
+def launch(wt, variant):
+    progress = ROOT / 'progress.txt'
+    progress.unlink(missing_ok=True)
+    done = ROOT / 'done'
+    done.unlink(missing_ok=True)
     print('Terminal', str(wt), 'foreground', ascii(foreground()), flush=True)
-    args = [str(wt), '-w', 'new', 'new-tab', '--title', TITLE, '--suppressApplicationTitle',
-            '--startingDirectory', str(ROOT), sys.executable, str(SCRIPT), 'inside', *variants]
+    args = [str(wt), '-w', 'new', 'new-tab', '--title', TITLE + ' ' + variant, '--suppressApplicationTitle',
+            '--startingDirectory', str(ROOT), sys.executable, str(SCRIPT), 'inside', str(wt), variant]
     terminal = subprocess.Popen(args)
     try:
-        wait_for('Windows Terminal child', (ROOT / 'progress.txt').exists, seconds=50)
-        wait_for('Windows Terminal results', (ROOT / 'done').exists, seconds=210)
+        wait_for('Windows Terminal child', progress.exists, seconds=50)
+        wait_for('Windows Terminal results', done.exists, seconds=120)
     finally:
-        progress = ROOT / 'progress.txt'
         if progress.exists():
             print(progress.read_text(encoding='utf-8'))
         print('Terminal exit', terminal.poll(), 'foreground', ascii(foreground()))
     if (ROOT / 'error').exists():
         raise RuntimeError((ROOT / 'error').read_text(encoding='utf-8'))
-    report = json.loads((ROOT / 'results.json').read_text())
+    time.sleep(1)
+    return json.loads((ROOT / f'{variant}.json').read_text())
+
+
+def outside(wt, variants):
+    ROOT.mkdir()
+    (wt.parent / '.portable').touch()
+    report = dict(
+        os=platform.platform(),
+        terminal=os.environ['WT_VERSION'],
+        terminal_exe_sha256=hashlib.sha256(wt.read_bytes()).hexdigest(),
+        build_id=os.getenv('BUILD_ID'),
+        run_id=os.environ['GITHUB_RUN_ID'],
+        builds=[launch(wt, variant) for variant in variants],
+        records=launch(wt, 'records'),
+    )
+    (ROOT / 'results.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     assert [v['variant'] for v in report['builds']] == variants
     for build in report['builds']:
         assert len(build['cases']) == 12
@@ -380,7 +430,7 @@ if __name__ == '__main__':
         export_draft(Path(sys.argv[2]))
     elif sys.argv[1] == 'inside':
         try:
-            inside(sys.argv[2:])
+            inside(sys.argv[2], sys.argv[3])
         except BaseException:
             (ROOT / 'error').write_text(traceback.format_exc(), encoding='utf-8')
         finally:
