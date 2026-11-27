@@ -7,11 +7,15 @@ permissions:
   contents: read
 env:
   OLD: 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63
-  NEW: a6a5152a1902d5ab0b313c59dd56928ad86f87da
+  NEW: 3d70dbc32fa37923e6cae406ce8e75f8abf301f4
   CARGO_INCREMENTAL: 0
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
 jobs:
   cli:
+    env:
+      CARGO_HOME: D:\c
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      STABLE_GIT_COMMIT: bee5dc55ac118d9136171fed55ffd89af26f8d21
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +41,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 't'
+          git config --global core.longpaths true
           git rev-parse HEAD
           Get-PSDrive -PSProvider FileSystem
           rustc -Vv
@@ -70,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: a6a5152a1902d5ab0b313c59dd56928ad86f87da
+          ref: 3d70dbc32fa37923e6cae406ce8e75f8abf301f4
           fetch-depth: 3
           persist-credentials: false
       - name: Windows parser and library
