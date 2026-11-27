@@ -1,16 +1,17 @@
-name: Windows Codex input calibration
+name: Native Windows Codex shortcut comparison
 on:
   push:
     branches: ['codex/55688-native-lab']
     paths: ['.github/workflows/55688-codex.yml', 'lab/matrix.py', 'lab/screen.ps1']
 permissions:
   contents: read
+  actions: read
 jobs:
   codex:
     strategy:
       fail-fast: false
       matrix:
-        klid: ['00000409', '00020419', '0002042b']
+        klid: ['00000409', '00000419', '00020419', '0002042b', '0000042b']
     timeout-minutes: 6
     runs-on: windows-2025
     env:
@@ -29,13 +30,23 @@ jobs:
           $terminal = Get-ChildItem wt -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
           New-Item -Type File (Join-Path $terminal.DirectoryName .portable)
           "WT_EXE=$($terminal.FullName)" >> $env:GITHUB_ENV
-      - name: Install released CLI for calibration
+      - name: Retrieve both executables from one source build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: matched-cli
+          github-token: ${{ github.token }}
+          run-id: 45928924516
+          path: pair
+      - name: Check versions and both SHA-256 hashes against the build log
         run: |
-          curl.exe --retry 3 -fsSL https://github.com/openai/codex/releases/download/rust-v0.172.0/codex-x86_64-pc-windows-msvc.exe.zip -o cli.zip
-          if ((Get-FileHash cli.zip).Hash -ne 'c4292fc0414fc78682e733ff570ddec377922ebe1a29925a6d5bcc5aeff43ea0') { throw 'bad checksum' }
-          Expand-Archive cli.zip released
-          $cli = Get-ChildItem released -Recurse -Filter 'codex*x86_64*.exe' | Select-Object -First 1
-          New-Item -Type Directory pair/before
-          Copy-Item $cli.FullName pair/before/codex.exe
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
+          $win = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          Write-Host "OS build $($win.CurrentBuild).$($win.UBR)"
+          Write-Host "Terminal $((Get-Item $env:WT_EXE).VersionInfo.ProductVersion)"
+          Write-Host "Source openai/codex bee5dc55ac118d9136171fed55ffd89af26f8d21"
+          Write-Host "Pin 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63"
+          Write-Host "Patch a6010533ecaf8e135902c1a5c7f44f08e00fd796"
+          if ((Get-FileHash pair/before/codex.exe).Hash -ne '7c9fbd805e4ad7d97af47cab1e5b4bd2fbb80a65dee3786df1834b1fca2ea228') { throw 'unexpected original binary' }
+          if ((Get-FileHash pair/after/codex.exe).Hash -ne 'd097d0b427356a82bb5e6137ecf6ed6d4a57872da4185ba647e1a5234db58a5e') { throw 'unexpected patched binary' }
       - name: Compare observable Codex actions
         run: python -u lab/matrix.py '${{ matrix.klid }}'
