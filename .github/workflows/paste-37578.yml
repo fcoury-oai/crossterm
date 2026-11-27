@@ -54,7 +54,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Paste and read the actual composer draft
         run: |
-          $variants = if ($env:BUILD_ID) { @('before', 'after') } else { @('release') }
+          [string[]]$variants = if ($env:BUILD_ID) { @('before', 'after') } else { @('release') }
           python unicode-paste.py $env:TERMINAL @variants
       - name: Save raw console records and draft bytes
         if: always()

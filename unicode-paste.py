@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import shutil
 import subprocess
 import sys
 import time
@@ -185,7 +184,9 @@ def raw_probe():
                 time.sleep(0.15)
                 records.extend(read_available())
                 captures[text] = describe(records)
-                log('clipboard records', ascii(text), json.dumps(captures[text]))
+                log('clipboard records', ascii(text), ' '.join(
+                    f"{r.unit:04X}{'d' if r.down else 'u'}" for r in records if r.unit >= 0x20
+                ))
     finally:
         check(SetConsoleMode(stdin, previous))
     return captures
@@ -337,7 +338,9 @@ def inside(variants):
     wait_for('Windows Terminal', terminal_window)
     result = dict(os=platform.platform(), terminal=os.environ['WT_VERSION'], records=raw_probe(), builds=[])
     for variant in variants:
-        exe = Path(os.environ['RUNNER_TEMP']) / variant / 'codex.exe'
+        directory = Path(os.environ['RUNNER_TEMP']) / variant
+        log('executable directory', directory)
+        exe, = directory.rglob('codex.exe')
         result['builds'].append(test_codex(variant, exe))
     (ROOT / 'results.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
 
