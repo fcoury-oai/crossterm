@@ -1,0 +1,25 @@
+name: Windows Terminal layout records
+on:
+  push:
+    branches: ['codex/55688-native-lab']
+    paths: ['.github/workflows/55688-input.yml', 'lab/desktop.py']
+permissions:
+  contents: read
+jobs:
+  records:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Get Windows Terminal 1.24.12741.0
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/microsoft/terminal/releases/download/v1.24.12741.0/Microsoft.WindowsTerminal_1.24.12741.0_x64.zip'
+          curl.exe --retry 3 -fsSL $url -o terminal.zip
+          if ((Get-FileHash terminal.zip).Hash -ne '7aaa8321064c45d5af79205db13deb87f146f644bd8abdfae29f0155d7ce744e') { throw 'bad checksum' }
+          Expand-Archive terminal.zip wt
+          $terminal = Get-ChildItem wt -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -Type File (Join-Path $terminal.DirectoryName .portable)
+          "WT_EXE=$($terminal.FullName)" >> $env:GITHUB_ENV
+      - run: python -u lab/desktop.py
