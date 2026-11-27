@@ -37,7 +37,7 @@ class Input(ct.Structure):
     _fields_ = [("type", wt.DWORD), ("payload", Payload)]
 
 user.SendInput.argtypes = [wt.UINT, ct.POINTER(Input), ct.c_int]
-scan = {"esc":1, "2":3, "backspace":14, "tab":15, "r":19, "t":20, "o":24,
+scan = {"esc":1, "2":3, "backspace":14, "tab":15, "r":19, "t":20, "q":16, "o":24,
         "enter":28, "ctrl":29, "a":30, "s":31, "d":32, "f":33, "h":35, "j":36,
         "k":37, "l":38, "shift":42, "z":44, "x":45, "c":46, "v":47, "b":48,
         "n":49, "m":50, "alt":56, "space":57, "caps":58, "rc":0x11d, "altgr":0x138}
@@ -91,8 +91,9 @@ def configure_wt():
 
 class Window:
     def __init__(self, name, command):
+        assert Path(command[0]).is_file(), command
         self.name = name
-        subprocess.Popen([os.environ["WT_EXE"], "-w", "new", "new-tab",
+        self.proc = subprocess.Popen([os.environ["WT_EXE"], "-w", "new", "new-tab",
                           "--title", name, "--suppressApplicationTitle", "-d", os.getcwd(),
                           *map(str, command)])
         def find():
@@ -127,6 +128,8 @@ class Window:
     def close(self):
         if user.IsWindow(self.handle):
             user.PostMessageW(self.handle, 0x10, 0, 0)
+            until(lambda: not user.IsWindow(self.handle), 8, "close WT")
+        self.proc.wait(timeout=8)
 
 def read_records(path):
     kernel.GetStdHandle.restype = wt.HANDLE

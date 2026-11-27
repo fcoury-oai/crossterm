@@ -42,7 +42,7 @@ def collect(side):
                     w.press("caps")
                     time.sleep(.15)
                 row[key] = "; ".join(records[:-1]) or "no event"
-            print(side, klid, names[klid], f"HKL {w.hkl&0xffffffff:08X}", json.dumps(row))
+            print(side, klid, names[klid], f"HKL {w.hkl&0xffffffff:08X}")
     finally:
         w.close()
     return rows
