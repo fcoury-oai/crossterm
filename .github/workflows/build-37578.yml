@@ -1,0 +1,92 @@
+name: Build Codex for Unicode paste comparison
+on:
+  push:
+    branches: [codex/verify-37578-windows]
+    paths: [.github/workflows/build-37578.yml]
+permissions:
+  contents: read
+env:
+  OLD: 37ca4a27a9424ec5dbe6451f48c339d7b45f8d63
+  NEW: a6a5152a1902d5ab0b313c59dd56928ad86f87da
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [before, after]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: bee5dc55ac118d9136171fed55ffd89af26f8d21
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Build with selected pin
+        working-directory: codex-rs
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 't'
+          git rev-parse HEAD
+          Get-PSDrive -PSProvider FileSystem
+          rustc -Vv
+          if ($env:VARIANT -eq 'after') {
+            foreach ($file in @('Cargo.toml','Cargo.lock')) {
+              $path = (Resolve-Path $file).Path
+              $text = [IO.File]::ReadAllText($path)
+              if (!$text.Contains($env:OLD)) { throw 'pin missing' }
+              $text = $text.Replace($env:OLD,$env:NEW).Replace('github.com/openai-oss-forks/crossterm','github.com/fcoury-oai/crossterm')
+              [IO.File]::WriteAllText($path,$text)
+            }
+          }
+          git diff
+          cargo pkgid --locked -p crossterm
+          cargo build --locked --profile dev-small --target x86_64-pc-windows-msvc -p codex-cli -p codex-code-mode-host -p codex-exec-server-cli --bin codex --bin codex-code-mode-host --bin codex-exec-server
+          $out = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/dev-small'
+          New-Item -ItemType Directory "$env:RUNNER_TEMP/package"
+          foreach ($exe in 'codex','codex-code-mode-host','codex-exec-server') {
+            Copy-Item "$out/$exe.exe" "$env:RUNNER_TEMP/package/"
+          }
+          & "$out/codex.exe" --version
+          (Get-FileHash "$out/codex.exe").Hash
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: ${{ matrix.variant }}
+          path: ${{ runner.temp }}/package/*.exe
+          retention-days: 1
+          if-no-files-found: error
+  parser:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: a6a5152a1902d5ab0b313c59dd56928ad86f87da
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Windows parser and library
+        shell: bash
+        run: |
+          set -eu
+          git rev-parse HEAD
+          rustc -Vv
+          cargo test --features event-stream --lib
+          cargo check --lib --no-default-features --features windows,events
+          git restore --source="$OLD" -- src/event/sys/windows/parse.rs
+          if cargo test --features event-stream --lib pairs_pasted_surrogates_across_key_releases > log 2>&1; then
+            cat log
+            exit 1
+          fi
+          cat log
+          grep '0 passed; 1 failed' log
+          cargo test --features event-stream --lib pairs_alt_code_surrogates_on_key_release
+
