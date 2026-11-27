@@ -59,7 +59,7 @@ def configure(root, port):
     (root / "workspace").mkdir(parents=True)
     home = root / "home"
     home.mkdir()
-    config = f"""model = 'gpt-5.6-terra'
+    config = f"""model = 'gpt-6-sol'
 model_provider = 'fixture'
 log_dir = '{root / "log"}'
 check_for_update_on_startup = false
