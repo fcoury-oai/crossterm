@@ -1,0 +1,68 @@
+name: Windows Terminal clipboard and Codex draft comparison
+on:
+  push:
+    branches: [codex/verify-37578-windows]
+    paths: [.github/workflows/paste-37578.yml, unicode-paste.py]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paste:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [{"version":"1.24.12741.0","sha":"7aaa8321064c45d5af79205db13deb87f146f644bd8abdfae29f0155d7ce744e"}]
+    env:
+      WT_VERSION: ${{ matrix.version }}
+      WT_SHA: ${{ matrix.sha }}
+      BUILD_ID: ''
+      PYTHONUTF8: 1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Fetch Windows Terminal
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:WT_VERSION
+          $pkg = "Microsoft.WindowsTerminal_${v}_x64.zip"
+          curl.exe -fsSL --retry 3 "https://github.com/microsoft/terminal/releases/download/v$v/$pkg" -o wt.zip
+          if ((Get-FileHash wt.zip).Hash -ne $env:WT_SHA) {throw 'terminal checksum'}
+          Expand-Archive wt.zip -DestinationPath "$env:RUNNER_TEMP/wt"
+          $terminal = (Get-ChildItem "$env:RUNNER_TEMP/wt" -Recurse -Filter WindowsTerminal.exe).FullName
+          "TERMINAL=$terminal" >> $env:GITHUB_ENV
+          (Get-Item $terminal).VersionInfo
+          Get-CimInstance Win32_OperatingSystem | Format-List Caption,Version,BuildNumber,OSArchitecture
+          (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion').UBR
+          "Session $((Get-Process -Id $PID).SessionId) is interactive: $([Environment]::UserInteractive)"
+          python --version
+      - name: Fetch reference release to check the harness
+        if: env.BUILD_ID == ''
+        run: |
+          curl.exe -fsSL --retry 3 'https://github.com/openai/codex/releases/download/rust-v0.172.0/codex-x86_64-pc-windows-msvc.exe.zip' -o release.zip
+          if ((Get-FileHash release.zip).Hash -ne 'c4292fc0414fc78682e733ff570ddec377922ebe1a29925a6d5bcc5aeff43ea0') {throw 'release checksum'}
+          Expand-Archive release.zip -DestinationPath "$env:RUNNER_TEMP/release"
+          $cli = (Get-ChildItem "$env:RUNNER_TEMP/release" -Recurse -Filter 'codex-x86_64-pc-windows-msvc.exe').FullName
+          if ($cli) { Move-Item $cli "$env:RUNNER_TEMP/release/codex.exe" }
+      - name: Fetch builds from the same source and profile
+        if: env.BUILD_ID != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: ${{ runner.temp }}
+          run-id: ${{ env.BUILD_ID }}
+          github-token: ${{ github.token }}
+      - name: Paste and read the actual composer draft
+        run: |
+          $variants = if ($env:BUILD_ID) { @('before', 'after') } else { @('release') }
+          python unicode-paste.py $env:TERMINAL @variants
+      - name: Save raw console records and draft bytes
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: results-${{ matrix.version }}
+          path: |
+            ${{ runner.temp }}/paste-37578/*.utf8
+            ${{ runner.temp }}/paste-37578/results.json
+          retention-days: 7
+
