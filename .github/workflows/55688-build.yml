@@ -1,0 +1,95 @@
+name: Windows Ctrl letter builds
+on:
+  push:
+    branches: ['codex/55688-native-lab']
+    paths: ['.github/workflows/55688-build.yml']
+permissions:
+  contents: read
+jobs:
+  cli:
+    runs-on: windows-2025
+    env:
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: D:\t
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      STABLE_GIT_COMMIT: bee5dc55ac118d9136171fed55ffd89af26f8d21
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: bee5dc55ac118d9136171fed55ffd89af26f8d21
+          persist-credentials: false
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Build matched binaries
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -Vv
+          git rev-parse HEAD
+          df -h /d
+          for side in before after; do
+            if [[ "$side" == "after" ]]; then
+              sed -i -e 's@github.com/openai-oss-forks/crossterm@github.com/fcoury-oai/crossterm@g' -e 's/37ca4a27a9424ec5dbe6451f48c339d7b45f8d63/a6010533ecaf8e135902c1a5c7f44f08e00fd796/g' Cargo.toml Cargo.lock
+              git diff -- Cargo.toml Cargo.lock
+            fi
+            cargo tree --locked -p crossterm --depth 0
+            cargo build --locked --profile dev-small -p codex-cli --bin codex
+            mkdir -p ../pair/"$side"
+            cp /d/t/dev-small/codex.exe ../pair/"$side"/
+            ../pair/"$side"/codex.exe --version
+            sha256sum ../pair/"$side"/codex.exe
+          done
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: matched-cli
+          path: pair
+          retention-days: 1
+  records:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: f8970156302408a618c2a9b3f3443f92f8cbf20f
+          persist-credentials: false
+      - name: Regression on original parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib --no-run
+          if cargo test --locked --lib ctrl_letters_use_the_control_code_or_the_virtual_key_when_nul > red.log; then exit 1; fi
+          cat red.log
+          grep '1 failed' red.log
+      - name: Updated Windows library
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin a6010533ecaf8e135902c1a5c7f44f08e00fd796
+          git checkout --detach a6010533ecaf8e135902c1a5c7f44f08e00fd796
+          cargo test --locked --lib
+  desktop:
+    runs-on: windows-2025
+    steps:
+      - name: Get Windows Terminal 1.24.12741.0
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/microsoft/terminal/releases/download/v1.24.12741.0/Microsoft.WindowsTerminal_1.24.12741.0_x64.zip'
+          curl.exe --retry 3 -fsSL $url -o terminal.zip
+          if ((Get-FileHash terminal.zip).Hash -ne '7aaa8321064c45d5af79205db13deb87f146f644bd8abdfae29f0155d7ce744e') { throw 'bad checksum' }
+          Expand-Archive terminal.zip wt
+          $terminal = Get-ChildItem wt -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -Type File (Join-Path $terminal.DirectoryName .portable)
+          "WT_EXE=$($terminal.FullName)" >> $env:GITHUB_ENV
+      - name: Verify interactive desktop
+        run: |
+          Get-CimInstance win32_operatingsystem | Select-Object Caption,Version
+          Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Keyboard Layouts\*' | Where-Object { $_.'Layout Text' -match 'Armenian|Russian' } | Select-Object PSChildName,'Layout Text'
+          Start-Process $env:WT_EXE -ArgumentList 'new-tab --title probe cmd.exe /k ver'
+          Start-Sleep -Seconds 5
+          Get-Process WindowsTerminal | Select-Object Name,SessionId,MainWindowTitle,MainWindowHandle | Format-List
